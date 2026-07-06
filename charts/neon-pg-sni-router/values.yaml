@@ -1,92 +1,92 @@
-# Default values for neon-pg-sni-router.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
+# neon-pg-sni-router 默认配置。
+# 本文件为 YAML 格式。
+# 在此声明要传入模板的变量。
 
-# Use cert-manager to generate TLS certificates
-# otherwise, you need to provide your own certificates
+# 使用 cert-manager 生成 TLS 证书
+# 否则，需要自行提供证书
 useCertManager: false
 
 replicaCount: 1
 
-# -- strategy override for deployment
+# -- Deployment 的更新策略覆盖
 deploymentStrategy:
   type: RollingUpdate
   rollingUpdate:
     maxSurge: 100%
     maxUnavailable: 50%
 
-# -- Deployment's terminationGracePeriodSeconds
+# -- Deployment 的优雅终止宽限期（秒）
 terminationGracePeriodSeconds: 30
 
 image:
-  # -- Neondatabase image repository
+  # -- Neondatabase 镜像仓库地址
   repository: neondatabase/neon
-  # -- image pull policy
+  # -- 镜像拉取策略
   pullPolicy: IfNotPresent
-  # -- Overrides the image tag whose default is the chart appVersion.
+  # -- 覆盖镜像 tag，默认为 chart 的 appVersion
   tag: "latest"
 
-# -- Specify docker-registry secret names as an array
+# -- 以数组形式指定 docker-registry 的 secret 名称
 imagePullSecrets: []
 
-# -- (string) The root certificate(s) that neon-proxy should use to validate compute TLS certificates.
+# -- (string) neon-proxy 用于验证计算节点 TLS 证书的根证书
 internalCa: null
 
-# -- String to partially override neon-pg-sni-router.fullname template (will maintain the release name)
+# -- 部分覆盖 neon-pg-sni-router.fullname 模板名称（保留 release 名称）
 nameOverride: ""
-# -- String to fully override neon-pg-sni-router.fullname template
+# -- 完全覆盖 neon-pg-sni-router.fullname 模板名称
 fullnameOverride: ""
 
-# Neon proxy settings
+# Neon proxy 配置
 settings:
-  # settings.destination -- append this domain zone to the transformed SNI hostname to get the destination address, e.g. "svc.cluster.local"
+  # settings.destination -- 将此域名后缀追加到转换后的 SNI 主机名以获取目标地址，例如 "svc.cluster.local"
   destination: "svc.cluster.local"
-  # settings.authEndpoint -- auth endpoint, e.g. "http://console.neon/authenticate_proxy_request/"
+  # settings.authEndpoint -- 认证端点，例如 "http://console.neon/authenticate_proxy_request/"
   authEndpoint: ""
-  # settings.uri - psql session endpoint, e.g. "http://console.neon/psql_session/"
+  # settings.uri -- psql 会话端点，例如 "http://console.neon/psql_session/"
   uri: ""
-  # settings.authBackend -- auth method used (console|link|postgres)
+  # settings.authBackend -- 认证方式（console|link|postgres）
   authBackend: "link"
-  # settings.domain -- domain used in TLS cert for client postgres connections
+  # settings.domain -- 客户端 PostgreSQL 连接的 TLS 证书中使用的域名
   domain: "dummy"
-  # settings.sentryUrl -- url (will be converted into `SENTRY_DSN` environment variable) used by sentry to collect error/panic events in neon-pg-sni-router
+  # settings.sentryUrl -- Sentry 用于收集 neon-pg-sni-router 错误/panic 事件的 URL（转换为 `SENTRY_DSN` 环境变量）
   sentryUrl: ""
-  # settings.sentryEnvironment -- "development" or "production". It will be visible in sentry in order to filter issues
+  # settings.sentryEnvironment -- "development" 或 "production"，在 Sentry 中可见用于筛选问题
   sentryEnvironment: "development"
-  # settings.wssPort -- (int) numeric port used for wss/https connections. If null, wss server will not be started
+  # settings.wssPort -- (int) WSS/HTTPS 端口。为 null 时不启动 WSS 服务
   wssPort: null
-  # settings.metricCollectionEndpoint -- (url) endpoint used to send metrics to. If null, metrics will not be sent.
+  # settings.metricCollectionEndpoint -- (url) 指标上报端点。为 null 时不发送指标
   metricCollectionEndpoint: ""
-  # settings.metricCollectionInterval -- (string) how often metrics should be sent.
+  # settings.metricCollectionInterval -- (string) 指标发送频率
   metricCollectionInterval: ""
 
 serviceAccount:
-  # serviceAccount.create - Specifies whether a service account should be created
+  # serviceAccount.create -- 是否创建 ServiceAccount
   create: true
-  # serviceAccount.annotations -- Annotations to add to the service account
+  # serviceAccount.annotations -- ServiceAccount 的注解
   annotations: {}
-  # serviceAccount.name - The name of the service account to use.
-  # If not set and create is true, a name is generated using the fullname template
+  # serviceAccount.name -- 要使用的 ServiceAccount 名称
+  # 如果未设置且 create 为 true，将通过 fullname 模板生成名称
   name: ""
 
-# -- Annotations for neon-pg-sni-router pods
+# -- neon-pg-sni-router Pod 的注解
 podAnnotations: {}
 
-# -- Additional labels for neon-pg-sni-router pods
+# -- neon-pg-sni-router Pod 的附加标签
 podLabels: {}
   # neon_service: proxy
   # neon_env: staging
   # neon_region: us-west-1
 # neon_region_slug: virginia
 
-# -- neon-pg-sni-router's pods Security Context
+# -- neon-pg-sni-router Pod 的安全上下文
 podSecurityContext: {}
 # fsGroup: 2000
 
-# -- container lifecycle hooks specification for neon-pg-sni-router container
+# -- neon-pg-sni-router 容器的生命周期钩子配置
 containerLifecycle: {}
 
-# -- neon-pg-sni-router's containers Security Context
+# -- neon-pg-sni-router 容器的安全上下文
 securityContext: {}
   # capabilities:
   #   drop:
@@ -96,29 +96,29 @@ securityContext: {}
 # runAsUser: 1000
 
 service:
-  # service.annotations -- Annotations to add to the service
+  # service.annotations -- Service 的注解
   annotations: {}
-  # service.type -- Service type
+  # service.type -- Service 类型
   type: ClusterIP
-  # service.port -- Service management port
+  # service.port -- Service 管理端口
   port: 7000
-  # service.httpPort -- Http management port
+  # service.httpPort -- HTTP 管理端口
   httpPort: 9090
 
 exposedService:
-  # exposedService.annotations -- Annotations to add to the exposed service
+  # exposedService.annotations -- 外部暴露 Service 的注解
   annotations: {}
     # service.beta.kubernetes.io/aws-load-balancer-type: external
     # service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
     # service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
   # external-dns.alpha.kubernetes.io/hostname: chart-example.local
-  # exposedService.type -- Exposed service type
+  # exposedService.type -- 外部暴露的 Service 类型
   type: LoadBalancer
-  # exposedService.port -- Exposed Service proxy port
+  # exposedService.port -- 外部暴露的代理端口
   port: 5432
-  # exposedService.portTls -- Exposed Service proxy port that uses TLS to computes
+  # exposedService.portTls -- 使用 TLS 连接计算节点的外部暴露代理端口
   portTls: 5433
-  # exposedService.httpsPort -- (int) Exposed Service https port. If null, https server will not be exposed.
+  # exposedService.httpsPort -- (int) 外部暴露的 HTTPS 端口。为 null 时不暴露 HTTPS 服务
   httpsPort: null
 
 resources:
@@ -128,45 +128,45 @@ resources:
     cpu: 200m
     memory: 512Mi
 
-# -- Node labels for pod assignment.
+# -- Pod 调度的节点标签选择器
 nodeSelector: {}
 
-# -- Tolerations for pod assignment.
+# -- Pod 调度的容忍策略
 tolerations: []
 
-# -- Affinity for pod assignment
+# -- Pod 调度的亲和性策略
 affinity: {}
 
 metrics:
-  # metrics.enabled -- Enable prometheus metrcis autodiscovery
+  # metrics.enabled -- 启用 Prometheus 指标自动发现
   enabled: false
-  ## Prometheus Operator ServiceMonitor configuration
+  ## Prometheus Operator ServiceMonitor 配置
   ##
   serviceMonitor:
-    # metrics.serviceMonitor.enabled -- Create ServiceMonitor resource
+    # metrics.serviceMonitor.enabled -- 创建 ServiceMonitor 资源
     enabled: false
 
-    # metrics.serviceMonitor.namespace -- The namespace in which the ServiceMonitor will be created, if empty then Release.Namespace used
+    # metrics.serviceMonitor.namespace -- 创建 ServiceMonitor 的命名空间，为空则使用 Release.Namespace
     namespace: ""
 
-    ## Interval at which metrics should be scraped.
-    ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
+    ## Prometheus 抓取指标的时间间隔
+    ## 参考: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
     ##
-    # metrics.serviceMonitor.interval -- Interval in which prometheus scrapes
+    # metrics.serviceMonitor.interval -- Prometheus 抓取指标的时间间隔
     interval: 10s
 
-    ## Timeout after which the scrape is ended
-    ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
+    ## 抓取超时时间
+    ## 参考: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
     ##
-    # metrics.serviceMonitor.scrapeTimeout -- Scrape Timeout duration for prometheus
+    # metrics.serviceMonitor.scrapeTimeout -- Prometheus 抓取超时时间
     scrapeTimeout: 10s
 
-    ## ServiceMonitor selector labels
-    ## ref: https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack#prometheusioscrape
+    ## ServiceMonitor 选择器标签
+    ## 参考: https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack#prometheusioscrape
     ##
-    # metrics.serviceMonitor.selector -- Additional labels to attach (used by Prometheus operator)
+    # metrics.serviceMonitor.selector -- 附加标签（供 Prometheus operator 使用）
     selector: {}
     # selector:
     #   prometheus: neon
-# -- Additional manifests that are created with the chart
+# -- 随 chart 创建的额外 K8s 清单
 extraManifests: []

@@ -1,4 +1,4 @@
-# Default values for neon-endpoint-storage.
+# neon-endpoint-storage 的默认参数值。
 image:
   repository: neondatabase/neon
   pullPolicy: Always
@@ -24,24 +24,22 @@ service:
 
 skipS3Check: true
 settings:
-  # If you use S3 (we need at least one variant to start service in tests,
-  # so uncomment this variant)
+  # 如果使用 S3（测试中至少需要一个存储变体来启动服务，因此取消注释此变体）
   type: "AwsS3"
   bucket_name: ""
   bucket_region: ""
   #
-  # If you use Azure:
+  # 如果使用 Azure：
   # type: "AzureContainer"
   # container_name: ""
   # container_region: ""
   # storage_account: ""
 
-  # public key as a Secret with pemfile.pem to validate JWT requests.
-  # If /certs/dummy.pem, helm chart uses a dummy Secret for tests to pass,
-  # otherwise secret will be mounted at this place and passed to config, so choose
-  # any name
+  # 用于验证 JWT 请求的公钥，存储为包含 pemfile.pem 的 Secret。
+  # 如果设置为 /certs/dummy.pem，helm chart 会使用一个虚拟的 Secret 来通过测试，
+  # 否则 Secret 将挂载到此位置并传递给配置，因此可以选择任意名称
   pemfile: "/certs/dummy.pem"
-  # port must match .Values.service.port
+  # 端口必须与 .Values.service.port 匹配
   listen: "0.0.0.0:80"
 
 nodeSelector: {}

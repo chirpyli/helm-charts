@@ -1,113 +1,113 @@
-# Default values for neon-storage-controller.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
+# neon-storage-controller 默认配置值。
+# 这是一个 YAML 格式的文件。
+# 在此声明要传递给模板的变量。
 
 image:
-  # -- Neondatabase image repository
+  # -- Neondatabase 镜像仓库
   repository: neondatabase/neon
-  # -- image pull policy
+  # -- 镜像拉取策略
   pullPolicy: Always
-  # -- Overrides the image tag whose default is the chart appVersion.
+  # -- 覆盖镜像标签，默认为 Chart 的 appVersion
   tag: "latest"
 
-# -- Specify docker-registry secret names as an array
+# -- 指定 docker-registry 的 Secret 名称数组
 imagePullSecrets: []
 
-# -- String to partially override neon-storage-controller.fullname template (will maintain the release name)
+# -- 部分覆盖 neon-storage-controller.fullname 模板的字符串（保留发布名称）
 nameOverride: ""
-# -- String to fully override neon-storage-controller.fullname template
+# -- 完全覆盖 neon-storage-controller.fullname 模板的字符串
 fullnameOverride: ""
 
-# Neon controller settings
+# Neon controller 配置
 settings:
-  # settings.sentryUrl -- url (will be converted into `SENTRY_DSN` environment variable) used by sentry to collect error/panic events in storage-controller
+  # settings.sentryUrl -- URL（将转换为 `SENTRY_DSN` 环境变量），Sentry 用于收集 storage-controller 中的错误/panic 事件
   sentryUrl: ""
-  # settings.sentryEnvironment -- "development" or "production". It will be visible in sentry in order to filter issues
+  # settings.sentryEnvironment -- "development" 或 "production"，在 Sentry 中用于过滤问题
   sentryEnvironment: "development"
-  # postgresql:// URL to the database
+  # 数据库的 postgresql:// 连接 URL
   databaseUrl: ""
-  # JWT token for authentication with pageservers
+  # 与 pageserver 认证的 JWT token
   jwtToken: ""
-  # -- JWT token for authentication with safekeepers
+  # -- 与 safekeeper 认证的 JWT token
   safekeeperJwtToken: ""
-  # -- JWT token for authentication with other storage controller instances
+  # -- 与其他 storage controller 实例认证的 JWT token
   peerJwtToken: ""
-  # public key for authenticating incoming HTTP requests
+  # 用于验证传入 HTTP 请求的公钥
   publicKey: ""
-  # JWT token for authenticating calls to controlPlaneUrl
+  # 用于调用 controlPlaneUrl 认证的 JWT token
   controlPlaneJwtToken: ""
-  # -- Base URL for control plane API endpoints (e.g., https://control-plane.example.com/storage/api/v1/)
+  # -- Control Plane API 的基础 URL（例如 https://control-plane.example.com/storage/api/v1/）
   controlPlaneUrl: ""
-  # -- Base URL for control plane management API (e.g., https://control-plane.example.com:1000/)
+  # -- Control Plane Management API 的基础 URL（例如 https://control-plane.example.com:1000/）
   lbmManagementUrl: ""
-  # -- Base URL for control plane storage API (e.g., https://control-plane.example.com:1002/storage/api/v1/)
+  # -- Control Plane Storage API 的基础 URL（例如 https://control-plane.example.com:1002/storage/api/v1/）
   lbmStorageUrl: ""
-  # -- Interval at which to run the anti entropy background job (e.g., once per day, hour, week)
+  # -- 运行反熵后台任务的间隔（例如，每天一次、每小时一次、每周一次）
   antiEntropyJobInterval: ""
-  # -- Delay between two individual tenants, to not exhaust the LBM with API requests
+  # -- 两个独立 tenant 之间的延迟时间，避免 API 请求耗尽 LBM
   antiEntropyJobDelay: ""
-  # -- If true, actually act on the mismatches, correcting storcon entries (detach if needed, adjust tenant config if needed)
+  # -- 如果为 true，则实际对不匹配项执行操作，修正 storcon 条目（必要时 detach，必要时调整 tenant 配置）
   antiEntropyJobEnact: false
-  # settings.heartbeatInterval -- Period with which to send heartbeats to registered nodes.
+  # settings.heartbeatInterval -- 向已注册节点发送心跳的周期
   heartbeatInterval: ""
-  # settings.maxOfflineInterval -- Grace period before marking unresponsive pageserver offline.
+  # settings.maxOfflineInterval -- 将无响应的 pageserver 标记为 offline 之前的宽限期
   maxOfflineInterval: ""
-  # settings.maxWarmingUpInterval -- Extended grace period within which pageserver may not respond
-  # to heartbeats. Kicks in after the node has been drained for restart and/or upon handling the
-  # re-attach request from a node.
+  # settings.maxWarmingUpInterval -- 扩展宽限期，在此时间内 pageserver 可能不响应
+  # 心跳。在节点被 drain 以进行重启后和/或处理来自节点的
+  # re-attach 请求时生效。
   maxWarmingUpInterval: ""
-  # settings.initialSplitThreshold -- Size threshold in bytes for initial tenant splits.
+  # settings.initialSplitThreshold -- 初始 tenant 拆分的字节大小阈值
   initialSplitThreshold: ""
-  # settings.initialSplitShards -- Number of shards to use for initial tenant splits.
+  # settings.initialSplitShards -- 初始 tenant 拆分时使用的 shard 数量
   initialSplitShards: ""
-  # settings.splitThreshold -- Shard size threshold in bytes for automatically splitting shards.  Omit to disable auto-sharding (default)
+  # settings.splitThreshold -- 自动拆分 shard 的字节大小阈值。不设置则禁用自动分片（默认）
   splitThreshold: ""
-  # settings.maxSplitShards -- Maximum number of shards for autosplits.
+  # settings.maxSplitShards -- 自动拆分的最大 shard 数量
   maxSplitShards: ""
-  # settings.lazyDrainsFills -- If true, use lazy attaches for node drains and fills.
+  # settings.lazyDrainsFills -- 如果为 true，对节点 drain 和 fill 使用延迟挂载（lazy attach）
   lazyDrainsFills: ""
-  # -- Chaos testing for tenant migration interval
+  # -- 混沌测试：tenant 迁移间隔
   chaosInterval: ""
-  # -- Chaos testing for immediate exit crontab
+  # -- 混沌测试：立即退出的 crontab 配置
   chaosExitCrontab: ""
-  # -- Chaos testing for timeline safekeeper migration interval
+  # -- 混沌测试：timeline safekeeper 迁移间隔
   chaosSafekeeperInterval: ""
-  # -- When set, in small (<20GB) shard splits trigger and wait for a reference timeline digest, then split, then trigger a post-digest and check that it equals the reference.
+  # -- 启用后，在小型（<20GB）shard 拆分中触发并等待参考 timeline digest，拆分后触发拆分后 digest 并检查其是否与参考值一致
   checkTimelineDigestAcrossSmallShardSplits: false
-  # -- Interval for the background consistency check
+  # -- 后台一致性检查的间隔
   consistencyCheckInterval: ""
-  # -- When set to True, restart the service gracefully
+  # -- 设置为 True 时，优雅重启服务
   startAsCandidate: false
-  # -- Whether to create timelines on safekeepers as well
+  # -- 是否同样在 safekeeper 上创建 timelines
   timelinesOntoSafekeepers: false
-  # -- If a reconciliation takes longer than this, bump an alerting metric
+  # -- 如果一次 reconcile 耗时超过此值，则触发告警指标
   longReconcileThreshold: "30min"
-  # -- The neon_region label as it would be set in the neon.com observability stack.
+  # -- neon_region 标签，用于 neon.com 可观测性栈
   neonRegion: ""
-  # -- The neon_cloud label as it would be set in the neon.com observability stack.
+  # -- neon_cloud 标签，用于 neon.com 可观测性栈
   neonCloud: ""
-  # -- When set, enable location_updates subsystem
+  # -- 启用后，开启 location_updates 子系统
   enableLocationUpdates: false
-  # -- Posthog config
+  # -- Posthog 配置
   posthogConfig: {}
-  # -- Whether to enable automatic pageserver tenant shard migrations
+  # -- 是否启用 pageserver tenant shard 自动迁移
   pageserverAutoMigrationEnabled: false
-  # -- Maximum number of concurrent migrations per destination node
+  # -- 每个目标节点最大并发迁移数
   pageserverAutoMigrationMaxMigrationsPerDestination: ""
-  # -- Minimum disk utilization percentage on source node to trigger migration
+  # -- 触发迁移的源节点最小磁盘使用百分比
   pageserverAutoMigrationDiskUtilizationSourceMin: ""
-  # -- Minimum actual disk usage percentage on source node to trigger migration
+  # -- 触发迁移的源节点最小实际磁盘使用百分比
   pageserverAutoMigrationDiskActualUsageSourceMin: ""
-  # -- Target disk utilization percentage for source node after migration
+  # -- 迁移后源节点目标磁盘使用百分比
   pageserverAutoMigrationDiskUtilizationSourceTarget: ""
-  # -- Maximum disk utilization percentage on destination node
+  # -- 目标节点最大磁盘使用百分比
   pageserverAutoMigrationDiskUtilizationDestinationMax: ""
-  # -- Maximum shard size limit for migration
+  # -- 迁移的最大 shard 大小限制
   pageserverAutoMigrationMaxShardSizeLimit: ""
 
 
-# Enable auto register to control plane
-# This will run postinstall job
+# 启用自动注册到 Control Plane
+# 这将运行 postinstall job
 registerControlPlane:
   enable: false
   # region_id: "<region-id>"
@@ -122,29 +122,29 @@ registerControlPlane:
       memory: 128M
 
 serviceAccount:
-  # serviceAccount.create - Specifies whether a service account should be created
+  # serviceAccount.create - 指定是否创建 ServiceAccount
   create: true
-  # serviceAccount.annotations -- Annotations to add to the service account
+  # serviceAccount.annotations -- 添加到 ServiceAccount 的注解
   annotations: {}
-  # serviceAccount.name - The name of the service account to use.
-  # If not set and create is true, a name is generated using the fullname template
+  # serviceAccount.name - 要使用的 ServiceAccount 名称。
+  # 如果未设置且 create 为 true，则使用 fullname 模板生成名称
   name: ""
 
-# -- Annotations for neon-storage-controller pods
+# -- neon-storage-controller Pod 的注解
 podAnnotations: {}
 
-# -- Additional labels for neon-storage-controller pods
+# -- neon-storage-controller Pod 的附加标签
 podLabels: {}
   # neon_service: controller
   # neon_env: staging
   # neon_region: us-west-1
   # neon_region_slug: virginia
 
-# -- neon-storage-controller's pods Security Context
+# -- neon-storage-controller Pod 安全上下文
 podSecurityContext: {}
   # fsGroup: 2000
 
-# -- neon-storage-controller's containers Security Context
+# -- neon-storage-controller 容器安全上下文
 securityContext: {}
   # capabilities:
   #   drop:
@@ -154,18 +154,18 @@ securityContext: {}
   # runAsUser: 1000
 
 service:
-  # service.annotations -- Annotations to add to the service
+  # service.annotations -- 添加到 Service 的注解
   annotations: {}
   type: ClusterIP
-  # service.port -- controller listen port
+  # service.port -- 控制器监听端口
   port: 50051
 
 ingress:
-  # ingress.enabled -- Enable ingress controller resource.
+  # ingress.enabled -- 启用 Ingress 控制器资源
   enabled: true
-  # ingress.className -- Ingress class for controller
+  # ingress.className -- 控制器的 Ingress 类
   className: nginx-int
-  # ingress.annotations -- Additional annotations for Ingress resource.
+  # ingress.annotations -- Ingress 资源的附加注解
   annotations: {}
     # external-dns.alpha.kubernetes.io/hostname: chart-example.local
   hosts:
@@ -176,7 +176,7 @@ ingress:
           pathType: Prefix
           protocol: TCP
 resources:
-  # limits == requests to achieve `Guaranteed` QoS class
+  # limits == requests 以达到 `Guaranteed` QoS 等级
   # => https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/#guaranteed
   limits:
     cpu: "2"
@@ -185,50 +185,50 @@ resources:
     cpu: "2"
     memory: 4Gi
 
-# -- Node labels for pod assignment.
+# -- Pod 节点选择器标签
 nodeSelector: {}
 
-# -- Tolerations for pod assignment.
+# -- Pod 容忍调度配置
 tolerations: []
 
-# -- Affinity for pod assignment
+# -- Pod 亲和性调度配置
 affinity: {}
 
-# -- Pod priority class
+# -- Pod 优先级类
 priorityClassName: ""
 
 metrics:
-  # metrics.enabled -- Enable prometheus metrcis autodiscovery
+  # metrics.enabled -- 启用 Prometheus 指标自动发现
   enabled: false
-  ## Prometheus Operator ServiceMonitor configuration
+  ## Prometheus Operator ServiceMonitor 配置
   ##
   serviceMonitor:
-    # metrics.serviceMonitor.enabled -- Create ServiceMonitor resource
+    # metrics.serviceMonitor.enabled -- 创建 ServiceMonitor 资源
     enabled: false
 
-    # metrics.serviceMonitor.namespace -- The namespace in which the ServiceMonitor will be created, if empty then Release.Namespace used
+    # metrics.serviceMonitor.namespace -- 创建 ServiceMonitor 的命名空间，为空则使用 Release.Namespace
     namespace: ""
 
-    ## Interval at which metrics should be scraped.
-    ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
+    ## 指标抓取间隔。
+    ## 参考: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
     ##
-    # metrics.serviceMonitor.interval -- Interval in which prometheus scrapes
+    # metrics.serviceMonitor.interval -- Prometheus 抓取间隔
     interval: 10s
 
-    ## Timeout after which the scrape is ended
-    ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
+    ## 抓取超时时间
+    ## 参考: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
     ##
-    # metrics.serviceMonitor.scrapeTimeout -- Scrape Timeout duration for prometheus
+    # metrics.serviceMonitor.scrapeTimeout -- Prometheus 抓取超时时间
     scrapeTimeout: 10s
 
-    ## ServiceMonitor selector labels
-    ## ref: https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack#prometheusioscrape
+    ## ServiceMonitor 选择器标签
+    ## 参考: https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack#prometheusioscrape
     ##
-    # metrics.serviceMonitor.selector -- Additional labels to attach (used by Prometheus operator)
+    # metrics.serviceMonitor.selector -- 附加标签（供 Prometheus operator 使用）
     selector: {}
     # selector:
     #   prometheus: neon
 
 
-# -- Additional manifests that are created with the chart
+# -- 随 Chart 一同创建的额外 Kubernetes 资源清单
 extraManifests: []

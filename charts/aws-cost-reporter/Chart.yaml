@@ -1,8 +1,32 @@
+# ============================================================================
+# Chart.yaml - Helm Chart 元数据描述文件
+# ============================================================================
+# 本文件是 Helm Chart 的核心元数据文件，每个 Chart 必须包含此文件。
+# Helm 通过此文件识别和管理 Chart，包含了 Chart 的基本信息、版本号、类型等关键属性。
+# 当执行 helm install、helm upgrade、helm repo 等命令时，Helm 会读取此文件。
+# ============================================================================
+
+# 指定 Chart API 版本，v2 表示使用 Helm 3+ 的 Chart 格式（支持 Chart 依赖和应用版本分离）
 apiVersion: v2
+
+# Chart 的名称，用于在 Helm 仓库中标识此 Chart，也是安装时的默认发布名称前缀
 name: aws-cost-reporter
+
+# Chart 的描述信息，简要说明此 Chart 的功能和用途，会在 helm search 和 helm show 命令中显示
 description: AWS Cost Reporter
+
+# Chart 类型，可选值为 'application'（应用程序，默认）或 'library'（库 Chart，供其他 Chart 引用）
 type: application
+
+# Chart 的版本号，必须遵循 Semantic Versioning (semver) 规范（MAJOR.MINOR.PATCH）
+# 任何对 Chart 的更改都应更新此版本号，包括文档修改、模板变更等
 version: 1.0.1
+
+# 应用程序版本号，表示 Chart 所部署的应用程序的版本
+# 与 version 不同，appVersion 反映的是实际运行的软件版本，而非 Chart 模板本身的版本
 appVersion: "v0.1.0"
+
+# Chart 的源代码地址列表，指向此 Chart 对应的应用程序源代码仓库
+# 方便用户查看和贡献代码
 sources:
   - https://github.com/neondatabase/aws-cost-reporter

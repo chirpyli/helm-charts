@@ -1,194 +1,194 @@
-# Default values for neon-proxy.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
+# neon-proxy 默认配置。
+# 本文件为 YAML 格式。
+# 在此声明要传入模板的变量。
 
 replicaCount: 1
 
-# -- The zones to deploy in. If empty, 1 deployment goes to all zones. If non-empty then each zone has one deployment.
+# -- 部署分区。为空时 1 个 Deployment 覆盖所有分区；非空时每个分区有 1 个独立 Deployment
 zones: {}
 
-# -- strategy override for deployment
+# -- Deployment 的更新策略覆盖
 deploymentStrategy:
   type: Recreate
 
-# -- Deployment's terminationGracePeriodSeconds
+# -- Deployment 的优雅终止宽限期（秒）
 terminationGracePeriodSeconds: 30
 
 image:
-  # -- Neondatabase image repository
+  # -- Neondatabase 镜像仓库地址
   repository: neondatabase/neon
-  # -- image pull policy
+  # -- 镜像拉取策略
   pullPolicy: Always
-  # -- Overrides the image tag whose default is the chart appVersion.
+  # -- 覆盖镜像 tag，默认为 chart 的 appVersion
   tag: "latest"
 
-# -- Specify docker-registry secret names as an array
+# -- 以数组形式指定 docker-registry 的 secret 名称
 imagePullSecrets: []
 
-# -- (string) The root certificate(s) that neon-proxy should use to validate compute TLS certificates.
+# -- (string) neon-proxy 用于验证计算节点 TLS 证书的根证书
 internalCa: null
 
-# -- String to partially override neon-proxy.fullname template (will maintain the release name)
+# -- 部分覆盖 neon-proxy.fullname 模板名称（保留 release 名称）
 nameOverride: ""
-# -- String to fully override neon-proxy.fullname template
+# -- 完全覆盖 neon-proxy.fullname 模板名称
 fullnameOverride: ""
 
-# Neon proxy settings
+# Neon proxy 配置
 settings:
-  # settings.useCertManager if true, will use cert-manager to generate TLS certs for client postgres connections
+  # settings.useCertManager 为 true 时，将使用 cert-manager 为客户端 PostgreSQL 连接生成 TLS 证书
   useCertManager: true
-  # settings.authEndpoint -- auth endpoint, e.g. "http://console.neon/authenticate_proxy_request/"
+  # settings.authEndpoint -- 认证端点，例如 "http://console.neon/authenticate_proxy_request/"
   authEndpoint: ""
-  # settings.uri - psql session endpoint, e.g. "http://console.neon/psql_session/"
+  # settings.uri -- psql 会话端点，例如 "http://console.neon/psql_session/"
   uri: ""
-  # settings.authBackend -- auth method used (console|link|postgres)
+  # settings.authBackend -- 认证方式（console|link|postgres）
   authBackend: "link"
-  # settings.domain -- domain used in TLS cert for client postgres connections
+  # settings.domain -- 客户端 PostgreSQL 连接的 TLS 证书中使用的域名
   domain: ""
-  # settings.extraDomains -- domains used in extra TLS certs for client postgres connections
+  # settings.extraDomains -- 客户端 PostgreSQL 连接额外 TLS 证书中使用的域名
   extraDomains: []
-  # settings.rustLog -- Proxy log level
+  # settings.rustLog -- Proxy 日志级别
   rustLog: "INFO"
-  # settings.logfmt -- Log format to use: "text" (default) or "json".
+  # settings.logfmt -- 日志格式："text"（默认）或 "json"
   logfmt: null
-  # settings.otelExporterOtlpEndpoint -- OpenTelemetry collector URL (will be converted into `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable)
+  # settings.otelExporterOtlpEndpoint -- OpenTelemetry Collector URL（转换为 `OTEL_EXPORTER_OTLP_ENDPOINT` 环境变量）
   otelExporterOtlpEndpoint: ""
-  # settings.otelExporterDisabled -- Disables OpenTelemetry (will be converted into `OTEL_SDK_DISABLED` environment variable)
+  # settings.otelExporterDisabled -- 禁用 OpenTelemetry（转换为 `OTEL_SDK_DISABLED` 环境变量）
   otelExporterDisabled: false
-  # settings.sentryUrl -- url (will be converted into `SENTRY_DSN` environment variable) used by sentry to collect error/panic events in neon-proxy
+  # settings.sentryUrl -- Sentry 用于收集 neon-proxy 错误/panic 事件的 URL（转换为 `SENTRY_DSN` 环境变量）
   sentryUrl: ""
-  # settings.sentryEnvironment -- "development" or "production". It will be visible in sentry in order to filter issues
+  # settings.sentryEnvironment -- "development" 或 "production"，在 Sentry 中可见用于筛选问题
   sentryEnvironment: "development"
-  # settings.wssPort -- (int) numeric port used for wss/https connections. If null, wss server will not be started
+  # settings.wssPort -- (int) WSS/HTTPS 端口。为 null 时不启动 WSS 服务
   wssPort: null
-  # settings.metricCollectionEndpoint -- (url) endpoint used to send metrics to. If null, metrics will not be sent.
+  # settings.metricCollectionEndpoint -- (url) 指标上报端点。为 null 时不发送指标
   metricCollectionEndpoint: ""
-  # settings.metricCollectionInterval -- (string) how often metrics should be sent.
+  # settings.metricCollectionInterval -- (string) 指标发送频率
   metricCollectionInterval: ""
-  # settings.controlplane_token -- (string) JWT token to pass to control plane management API
+  # settings.controlplane_token -- (string) 传递给 Control Plane 管理 API 的 JWT token
   controlplane_token: ""
-  # settings.wakeComputeLock -- (string) Configures the locking of wake_compute per endpoint
+  # settings.wakeComputeLock -- (string) 按 endpoint 配置 wake_compute 的锁定策略
   wakeComputeLock: "permits=0"
-  # settings.connectComputeLock -- (string) Configures the locking of connect_compute per compute
+  # settings.connectComputeLock -- (string) 按 compute 配置 connect_compute 的锁定策略
   connectComputeLock: ""
-  # settings.redisNotifications -- (url) Configures redis client
+  # settings.redisNotifications -- (url) Redis 客户端配置 URL
   redisNotifications: ""
-  # settings.redisAuthType -- (string) What auth type to use for regional Redis client. "irsa" and "plain" are supported. "plain" means use URI from settings.redisNotifications. "irsa" means AWS IRSA.
+  # settings.redisAuthType -- (string) 区域 Redis 客户端的认证方式。支持 "irsa" 和 "plain"。"plain" 使用 settings.redisNotifications 中的 URI；"irsa" 使用 AWS IRSA
   redisAuthType: "irsa"
-  # settings.sqlOverHttpMaxRequestSizeBytes -- (string) maximum sql-over-http request payload size in bytes
+  # settings.sqlOverHttpMaxRequestSizeBytes -- (string) SQL over HTTP 请求体的最大大小（字节）
   sqlOverHttpMaxRequestSizeBytes: "10485760"
-  # settings.sqlOverHttpMaxResponseSizeBytes -- (string) maximum sql-over-http response payload size in bytes
+  # settings.sqlOverHttpMaxResponseSizeBytes -- (string) SQL over HTTP 响应体的最大大小（字节）
   sqlOverHttpMaxResponseSizeBytes: "10485760"
-  # settings.sqlOverHttpTimeout -- (string) timeout for http connection requests
+  # settings.sqlOverHttpTimeout -- (string) HTTP 连接请求的超时时间
   sqlOverHttpTimeout: "15s"
-  # settings.httpPoolOptIn -- (bool) Sets the SQL over HTTP Pool to opt-in-only mode if true. Set false to enable it always
+  # settings.httpPoolOptIn -- (bool) 为 true 时 SQL over HTTP 连接池为 opt-in 模式；false 时始终启用
   httpPoolOptIn: true
-  # settings.endpointRpsLimits -- (list) list of rate limiters for connection attempts over different time intervals
+  # settings.endpointRpsLimits -- (list) 不同时间间隔下的连接尝试速率限制器列表
   endpointRpsLimits: []
-  # settings.wakeComputeLimits -- (list) list of rate limiters for wake_compute over different time intervals
+  # settings.wakeComputeLimits -- (list) 不同时间间隔下 wake_compute 的速率限制器列表
   wakeComputeLimits: []
-  # settings.authRateLimitsEnabled -- (bool) Whether to enable the authentication rate limiter
+  # settings.authRateLimitsEnabled -- (bool) 是否启用认证速率限制
   authRateLimitsEnabled: null
-  # settings.authRateLimit -- (list) list of rate limiters over different time intervals for authentication hash iterations per IP,EP
+  # settings.authRateLimits -- (list) 按 IP+EP 认证哈希迭代的不同时间间隔速率限制器列表
   authRateLimits: null
-  # settings.parquetUploadRemoteStorage -- (string) Storage location to upload the parquet files to.
+  # settings.parquetUploadRemoteStorage -- (string) Parquet 文件的上传目标存储位置
   parquetUploadRemoteStorage: ""
-  # settings.parquetUploadDisconnectEventsRemoteStorage -- (string) Storage location to upload the parquet files with disconnect events to.
+  # settings.parquetUploadDisconnectEventsRemoteStorage -- (string) 包含断连事件的 Parquet 文件上传目标存储位置
   parquetUploadDisconnectEventsRemoteStorage: ""
-  # settings.parquetUploadRowGroupSize -- (string) How many rows to include in a row group
+  # settings.parquetUploadRowGroupSize -- (string) 每个 row group 包含的行数
   parquetUploadRowGroupSize: "8192"
-  # settings.parquetUploadPageSize -- (string) How large each column page should be in bytes
+  # settings.parquetUploadPageSize -- (string) 每个列页的大小（字节）
   parquetUploadPageSize: "1048576"
-  # settings.parquetUploadSize -- (string) How large the total parquet file should be in bytes
+  # settings.parquetUploadSize -- (string) Parquet 文件总大小的上限（字节）
   parquetUploadSize: "100000000"
-  # settings.parquetUploadMaximumDuration -- (string) How long to wait before forcing a file upload
+  # settings.parquetUploadMaximumDuration -- (string) 强制上传文件前的最大等待时间
   parquetUploadMaximumDuration: "20m"
-  # settings.parquetUploadCompression -- (string) What level of compression to use
+  # settings.parquetUploadCompression -- (string) Parquet 文件压缩级别
   parquetUploadCompression: uncompressed
-  # settings.region -- (string) Region this proxy service is deployed into
+  # settings.region -- (string) 此 proxy 服务部署的区域
   region: ""
   # settings.awsAccessKeyId -- (string) AWS Access Key ID
   awsAccessKeyId: ""
   # settings.awsSecretAccessKey -- (string) AWS Secret Access Key
   awsSecretAccessKey: ""
-  # settings.metricBackupCollectionRemoteStorage -- (string) Storage location to upload the metric backup files to
+  # settings.metricBackupCollectionRemoteStorage -- (string) 指标备份文件的上传目标存储位置
   metricBackupCollectionRemoteStorage: ""
-  # settings.metrickBackupCollectionInterval -- (string) How often to upload the metric backup files
+  # settings.metricBackupCollectionInterval -- (string) 指标备份文件的上传频率
   metricBackupCollectionInterval: "10m"
-  # settings.metricBackupCollectionChunkSize -- (string) How large each chunk of the metric backup files should be in bytes
+  # settings.metricBackupCollectionChunkSize -- (string) 指标备份文件中每个 chunk 的大小（字节）
   metricBackupCollectionChunkSize: "4194304"
-  # settings.endpointCacheConfig -- (string) Config for cache for all valid endpoints
+  # settings.endpointCacheConfig -- (string) 所有有效 endpoint 的缓存配置
   endpointCacheConfig: ""
-  # settings.redisHost -- (string) Redis host for streaming connections (might be different from the notifications host)
+  # settings.redisHost -- (string) 流式连接的 Redis 主机（可能与通知主机不同）
   redisHost: ""
-  # settings.redisPort -- (string) Redis port for streaming connections
+  # settings.redisPort -- (string) 流式连接的 Redis 端口
   redisPort: ""
-  # settings.redisClusterName -- (string) Redis cluster name, used in aws elasticache
+  # settings.redisClusterName -- (string) Redis 集群名称，用于 AWS Elasticache
   redisClusterName: "regional-control-plane-redis"
-  # settings.redisUserId -- (string) Redis user_id, used in aws elasticache
+  # settings.redisUserId -- (string) Redis user_id，用于 AWS Elasticache
   redisUserId: "neon"
-  # settings.awsRegion -- (string) Aws region to retrieve credentials
+  # settings.awsRegion -- (string) 获取凭证的 AWS 区域
   awsRegion: ""
-  # settings.proxyProtocolV2 -- (string) Whether to enable or disable the parsing of PROXY protocol V2. "rejected", "supported", or "required" are accepted.
+  # settings.proxyProtocolV2 -- (string) 是否启用 PROXY protocol V2 解析。可选值："rejected"、"supported"、"required"
   proxyProtocolV2: ""
-  # settings.extraCmdFlags -- (list) additional arguments to proxy binary
+  # settings.extraCmdFlags -- (list) proxy 二进制的额外命令行参数
   extraCmdFlags: []
-  # settings.extraEnvVars -- (list) additional environment variables to proxy binary
+  # settings.extraEnvVars -- (list) proxy 二进制的额外环境变量
   extraEnvVars: []
-  # settings.consoleJwtPublicKey -- (string) Public key for console JWT verification
+  # settings.consoleJwtPublicKey -- (string) Console JWT 验证的公钥
   consoleJwtPublicKey: ""
-  # settings.neonMotd -- (boolean) Do we need to show welcome message with session_id?
+  # settings.neonMotd -- (boolean) 是否需要显示包含 session_id 的欢迎信息
   enable_neonMotd: false
 
 pgSniRouter:
-  # pgSniRouter.destination -- append this domain zone to the transformed SNI hostname to get the destination address, e.g. "svc.cluster.local"
+  # pgSniRouter.destination -- 将此域名后缀追加到转换后的 SNI 主机名以获取目标地址，例如 "svc.cluster.local"
   destination: "svc.cluster.local"
-  # pgSniRouter.domain -- domain used in TLS cert for client postgres connections
+  # pgSniRouter.domain -- 客户端 PostgreSQL 连接的 TLS 证书中使用的域名
   domain: ""
 
   exposedService:
-    # pgSniRouter.exposedService.name -- The name to give this service
+    # pgSniRouter.exposedService.name -- 此 Service 的名称
     name: ""
-    # pgSniRouter.exposedService.annotations -- Annotations to add to the exposed service
+    # pgSniRouter.exposedService.annotations -- 外部暴露 Service 的注解
     annotations: {}
       # service.beta.kubernetes.io/aws-load-balancer-type: external
       # service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
       # service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
       # external-dns.alpha.kubernetes.io/hostname: chart-example.local
-    # pgSniRouter.exposedService.type -- Exposed service type
+    # pgSniRouter.exposedService.type -- 外部暴露的 Service 类型
     type: LoadBalancer
-    # pgSniRouter.exposedService.port -- Exposed Service proxy port
+    # pgSniRouter.exposedService.port -- 外部暴露的代理端口
     port: 5432
-    # pgSniRouter.exposedService.portTls -- Exposed Service proxy port that uses TLS to computes
+    # pgSniRouter.exposedService.portTls -- 使用 TLS 连接计算节点的外部暴露代理端口
     portTls: 5433
 
 serviceAccount:
-  # serviceAccount.create - Specifies whether a service account should be created
+  # serviceAccount.create -- 是否创建 ServiceAccount
   create: true
-  # serviceAccount.annotations -- Annotations to add to the service account
+  # serviceAccount.annotations -- ServiceAccount 的注解
   annotations: {}
-  # serviceAccount.name - The name of the service account to use.
-  # If not set and create is true, a name is generated using the fullname template
+  # serviceAccount.name -- 要使用的 ServiceAccount 名称
+  # 如果未设置且 create 为 true，将通过 fullname 模板生成名称
   name: ""
 
-# -- Annotations for neon-proxy pods
+# -- neon-proxy Pod 的注解
 podAnnotations: {}
 
-# -- Additional labels for neon-proxy pods
+# -- neon-proxy Pod 的附加标签
 podLabels: {}
   # neon_service: proxy
   # neon_env: staging
   # neon_region: us-west-1
   # neon_region_slug: virginia
 
-# -- neon-proxy's pods Security Context
+# -- neon-proxy Pod 的安全上下文
 podSecurityContext: {}
   # fsGroup: 2000
 
-# -- container lifecycle hooks specification for neon-proxy container
+# -- neon-proxy 容器的生命周期钩子配置
 containerLifecycle: {}
 
-# -- neon-proxy's containers Security Context
+# -- neon-proxy 容器的安全上下文
 securityContext: {}
   # capabilities:
   #   drop:
@@ -198,32 +198,32 @@ securityContext: {}
   # runAsUser: 1000
 
 service:
-  # service.annotations -- Annotations to add to the service
+  # service.annotations -- Service 的注解
   annotations: {}
-  # service.type -- Service type
+  # service.type -- Service 类型
   type: ClusterIP
-  # service.port -- Service management port
+  # service.port -- Service 管理端口
   port: 7000
-  # service.httpPort -- Http management port
+  # service.httpPort -- HTTP 管理端口
   httpPort: 9090
 
 exposedService:
-  # exposedService.name -- The name to give this service
+  # exposedService.name -- 此 Service 的名称
   name: ""
-  # exposedService.annotations -- Annotations to add to the exposed service
+  # exposedService.annotations -- 外部暴露 Service 的注解
   annotations: {}
     # service.beta.kubernetes.io/aws-load-balancer-type: external
     # service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
     # service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
     # external-dns.alpha.kubernetes.io/hostname: chart-example.local
-  # exposedService.type -- Exposed service type
+  # exposedService.type -- 外部暴露的 Service 类型
   type: LoadBalancer
-  # exposedService.externalTrafficPolicy -- externalTrafficPolicy (Cluster, Internal)
+  # exposedService.externalTrafficPolicy -- 外部流量策略（Cluster, Internal）
   externalTrafficPolicy: Cluster
-  # exposedService.port -- Exposed Service proxy port.
-  # If null, proxy port will not be exposed. Useful for auth-broker.
+  # exposedService.port -- 外部暴露的代理端口
+  # 为 null 时不暴露代理端口，适用于 auth-broker 场景
   port: 5432
-  # exposedService.httpsPort -- (int) Exposed Service https port. If null, https server will not be exposed.
+  # exposedService.httpsPort -- (int) 外部暴露的 HTTPS 端口。为 null 时不暴露 HTTPS 服务
   httpsPort: null
 
 resources:
@@ -233,48 +233,48 @@ resources:
     cpu: 400m
     memory: 2Gi
 
-# -- Node labels for pod assignment.
+# -- Pod 调度的节点标签选择器
 nodeSelector: {}
 
-# -- Tolerations for pod assignment.
+# -- Pod 调度的容忍策略
 tolerations: []
 
-# -- Affinity for pod assignment
+# -- Pod 调度的亲和性策略
 affinity: {}
 
-# -- Topology spread constraints for pod assignment.
+# -- Pod 调度的拓扑分布约束
 topologySpreadConstraints: {}
 
 metrics:
-  # metrics.enabled -- Enable prometheus metrcis autodiscovery
+  # metrics.enabled -- 启用 Prometheus 指标自动发现
   enabled: false
-  ## Prometheus Operator ServiceMonitor configuration
+  ## Prometheus Operator ServiceMonitor 配置
   ##
   serviceMonitor:
-    # metrics.serviceMonitor.enabled -- Create ServiceMonitor resource
+    # metrics.serviceMonitor.enabled -- 创建 ServiceMonitor 资源
     enabled: false
 
-    # metrics.serviceMonitor.namespace -- The namespace in which the ServiceMonitor will be created, if empty then Release.Namespace used
+    # metrics.serviceMonitor.namespace -- 创建 ServiceMonitor 的命名空间，为空则使用 Release.Namespace
     namespace: ""
 
-    ## Interval at which metrics should be scraped.
-    ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
+    ## Prometheus 抓取指标的时间间隔
+    ## 参考: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
     ##
-    # metrics.serviceMonitor.interval -- Interval in which prometheus scrapes
+    # metrics.serviceMonitor.interval -- Prometheus 抓取指标的时间间隔
     interval: 10s
 
-    ## Timeout after which the scrape is ended
-    ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
+    ## 抓取超时时间
+    ## 参考: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
     ##
-    # metrics.serviceMonitor.scrapeTimeout -- Scrape Timeout duration for prometheus
+    # metrics.serviceMonitor.scrapeTimeout -- Prometheus 抓取超时时间
     scrapeTimeout: 10s
 
-    ## ServiceMonitor selector labels
-    ## ref: https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack#prometheusioscrape
+    ## ServiceMonitor 选择器标签
+    ## 参考: https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack#prometheusioscrape
     ##
-    # metrics.serviceMonitor.selector -- Additional labels to attach (used by Prometheus operator)
+    # metrics.serviceMonitor.selector -- 附加标签（供 Prometheus operator 使用）
     selector: {}
     # selector:
     #   prometheus: neon
-# -- Additional manifests that are created with the chart
+# -- 随 chart 创建的额外 K8s 清单
 extraManifests: []

@@ -1,57 +1,57 @@
-# Default values for aws-cost-reporter.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
+# aws-cost-reporter 的默认参数值。
+# 这是一个 YAML 格式的文件。
+# 声明要传递到模板中的变量。
 
 replicaCount: 1
 
 image:
-  # -- Image repository
+  # -- 镜像仓库地址
   repository: neondatabase/aws-cost-reporter
-  # -- image pull policy
+  # -- 镜像拉取策略
   pullPolicy: IfNotPresent
-  # -- Overrides the image tag whose default is the chart appVersion.
+  # -- 覆盖镜像标签，默认使用 chart 的 appVersion
   tag: ""
 
-# -- Specify docker-registry secret names as an array
+# -- 指定 Docker 镜像仓库密钥名称数组
 imagePullSecrets: []
-# -- String to partially override aws-cost-reporter.fullname template (will maintain the release name)
+# -- 部分覆盖 aws-cost-reporter.fullname 模板的字符串（保留发布名称）
 nameOverride: ""
-# -- String to fully override aws-cost-reporter.fullname template
+# -- 完全覆盖 aws-cost-reporter.fullname 模板的字符串
 fullnameOverride: ""
 
 serviceAccount:
-  # -- Specifies whether a service account should be created
+  # -- 指定是否创建 Service Account
   create: true
-  # -- Annotations to add to the service account
+  # -- 添加到 Service Account 的注解
   annotations: {}
-  # -- The name of the service account to use.
-  # If not set and create is true, a name is generated using the fullname template
+  # -- 使用的 Service Account 名称。
+  # 如果未设置且 create 为 true，则使用 fullname 模板生成名称
   name: ""
-  # -- AWS IAM Role arn (IRSA) used to access AWS Cost Explorer service
+  # -- 用于访问 AWS Cost Explorer 服务的 AWS IAM Role ARN（IRSA）
   roleArn: ""
 
 slack:
-  # -- Slack App token
+  # -- Slack App 令牌
   token: ""
-  # -- Slack channel ID
+  # -- Slack 频道 ID
   channelID: "#general"
-  # -- Slack message header
+  # -- Slack 消息标题
   header: "AWS Cost and Usage :moneybag:"
 
-# -- AWS Credentials if IRSA not used
+# -- 不使用 IRSA 时的 AWS 凭证
 aws: {}
   # awsAccessKey: YOURACCESSKEY
   # awsSecretKey: YourSecretKey
   # awsRegion: eu-east-1
 
-# -- Annotations for aws-cost-reporter pods
+# -- aws-cost-reporter Pod 的注解
 podAnnotations: {}
 
-# -- aws-cost-reporter's pods Security Context
+# -- aws-cost-reporter Pod 的安全上下文
 podSecurityContext: {}
   # fsGroup: 2000
 
-# -- aws-cost-reporter's containers Security Context
+# -- aws-cost-reporter 容器的安全上下文
 securityContext: {}
   # capabilities:
   #   drop:
@@ -61,10 +61,9 @@ securityContext: {}
   # runAsUser: 1000
 
 resources: {}
-  # We usually recommend not to specify default resources and to leave this as a conscious
-  # choice for the user. This also increases chances charts run on environments with little
-  # resources, such as Minikube. If you do want to specify resources, uncomment the following
-  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # 通常建议不指定默认资源限制，让用户根据实际情况选择。
+  # 这样也能增加 charts 在资源较少的环境（如 Minikube）中运行的可能性。
+  # 如果确实需要指定资源，请取消注释以下行，根据需要调整，并删除 resources: 后的花括号。
   # limits:
   #   cpu: 100m
   #   memory: 128Mi
@@ -72,11 +71,11 @@ resources: {}
   #   cpu: 100m
   #   memory: 128Mi
 
-# -- Node labels for pod assignment.
+# -- Pod 调度的节点标签选择器
 nodeSelector: {}
 
-# -- Tolerations for pod assignment.
+# -- Pod 调度的容忍度配置
 tolerations: []
 
-# -- Affinity for pod assignment
+# -- Pod 调度亲和性配置
 affinity: {}

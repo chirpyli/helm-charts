@@ -1,7 +1,28 @@
-# See https://github.com/helm/chart-testing#configuration
+# ============================================================================
+# chart-testing (ct) 工具配置文件
+# ============================================================================
+# 本文件用于配置 Helm chart-testing (ct) 工具的行为。
+# ct 是一个用于 Helm Chart 自动化测试的命令行工具，主要在 CI/CD 流程中使用，
+# 用于验证 Chart 的语法正确性、lint 检查以及在 Kubernetes 集群中进行安装测试。
+# 
+# 详细配置文档参考: https://github.com/helm/chart-testing#configuration
+# ============================================================================
+
+# 指定远程 Git 仓库的名称，通常为 'origin'，用于对比分支变更
 remote: origin
+
+# 指定目标分支，ct 会对比当前分支与该分支的差异，只测试变更的 charts
 target-branch: main
+
+# 指定包含 Helm Charts 的目录列表
+# ct 会在此目录下查找所有 Chart 进行测试
 chart-dirs:
   - charts
+
+# Helm 命令的额外参数
+# '--timeout 600s' 设置 Helm 操作（install/upgrade/delete）的超时时间为 10 分钟
 helm-extra-args: '--timeout 600s'
+
+# 是否验证 Chart 的 maintainers 字段是否包含有效的 GitHub 用户名
+# 设置为 false 表示跳过此验证，适用于 maintainers 可能包含非 GitHub 用户的场景
 validate-maintainers: false
