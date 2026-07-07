@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "neon-safekeeper.fullname" . }}
+  labels:
+    {{- include "neon-safekeeper.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ .Values.service.headless.name }}
+  replicas: {{ .Values.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "neon-safekeeper.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "neon-safekeeper.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "neon-safekeeper.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              SAFEKEEPER_ID=$(({{ .Values.baseId }} + $(echo ${POD_NAME##*-})))
+              exec safekeeper \
+                --listen-pg={{ .Values.settings.listenPg }} \
+                --listen-http={{ .Values.settings.listenHttp }} \
+                --id=${SAFEKEEPER_ID} \
+                --broker-endpoint={{ .Values.settings.brokerEndpoint }} \
+                -D /data \
+                --remote-storage="endpoint='$(AWS_ENDPOINT_URL)',bucket_name='$(BUCKET_NAME)',bucket_region='$(AWS_REGION)',prefix_in_bucket='{{ .Values.remoteStorage.prefixInBucket }}'"
+          env:
+            - name: RUST_LOG
+              value: "INFO"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          envFrom:
+            - secretRef:
+                name: {{ .Values.s3Credentials.existingSecret }}
+          ports:
+            - name: pg
+              containerPort: 5454
+              protocol: TCP
+            - name: http
+              containerPort: 7676
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "neon-safekeeper.labels" . | nindent 10 }}
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        {{- if .Values.persistence.enabled }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+        {{- else }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+        {{- end }}

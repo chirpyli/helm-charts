@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "neon-pageserver.configMapName" . }}
+  labels:
+    {{- include "neon-pageserver.labels" . | nindent 4 }}
+data:
+  pageserver.toml: |
+    # 服务发现
+    broker_endpoint = "{{ .Values.settings.brokerEndpoint }}"
+
+    # 监听地址
+    listen_pg_addr = "{{ .Values.settings.listenPgAddr }}"
+    listen_http_addr = "{{ .Values.settings.listenHttpAddr }}"
+
+    # PostgreSQL 发行版目录
+    pg_distrib_dir = "{{ .Values.settings.pgDistribDir }}"
+
+    # 远程存储（外部 MinIO / S3）
+    [remote_storage]
+    endpoint = "$(AWS_ENDPOINT_URL)"
+    bucket_name = "$(BUCKET_NAME)"
+    bucket_region = "$(AWS_REGION)"
+    prefix_in_bucket = "{{ .Values.remoteStorage.prefixInBucket }}"
+
+    # Storage Controller 连接（非 emergency mode）
+    control_plane_api = "{{ .Values.settings.controlPlaneApi }}"
+
+    # IO 模式
+    virtual_file_io_mode = "{{ .Values.settings.virtualFileIoMode }}"
+
+    # 认证：默认 Trust（无需 JWT）
+    http_auth = "{{ .Values.settings.httpAuth }}"
+
+    # 本地盘驱逐策略
+    [disk_usage_based_eviction]
+    enabled = {{ .Values.diskUsageEviction.enabled }}
+    max_usage_pct = {{ .Values.diskUsageEviction.maxUsagePct }}
+    min_avail_bytes = {{ .Values.diskUsageEviction.minAvailBytes }}
+    period = "60s"

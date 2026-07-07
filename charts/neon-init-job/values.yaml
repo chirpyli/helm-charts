@@ -1,0 +1,43 @@
+image:
+  repository: curlimages/curl
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# 初始化配置
+settings:
+  storageControllerEndpoint: "http://neon-storage-controller:50051"
+  pageserverEndpoint: "http://neon-pageserver:9898"
+  safekeeper:
+    replicas: 3
+    headlessService: "neon-safekeeper-headless"
+    pgPort: 5454
+    httpPort: 7676
+
+# 生成的输出 ConfigMap
+output:
+  configMapName: "neon-compute-config"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+resources:
+  limits:
+    cpu: "200m"
+    memory: 256Mi
+  requests:
+    cpu: "100m"
+    memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+extraManifests: []

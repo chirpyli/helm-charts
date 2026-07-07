@@ -1,0 +1,10 @@
+apiVersion: v2
+name: neon-pageserver
+description: Neon Pageserver - page storage layer
+type: application
+version: 0.1.0
+appVersion: "latest"
+kubeVersion: "^1.18.x-x"
+home: https://github.com/chirpyli/helm-charts
+sources:
+  - https://github.com/chirpyli/helm-charts

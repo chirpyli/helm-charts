@@ -1,0 +1,70 @@
+image:
+  repository: ghcr.io/neondatabase/compute-node-v16
+  pullPolicy: Always
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Deployment 配置
+replicas: 1
+
+# Compute 配置
+pgVersion: 16
+computeId: "compute-1"
+port: 55433
+devMode: true
+
+# 由 initJob 填充（tenant 创建后写入）
+tenantId: ""
+timelineId: ""
+
+# Pageserver 连接
+pageserver:
+  host: "neon-pageserver"
+  port: 6400
+
+# Safekeeper 连接（格式: host=<host> port=<port>）
+safekeepers:
+  - host: "neon-safekeeper-0.neon-safekeeper-headless"
+    port: 5454
+  - host: "neon-safekeeper-1.neon-safekeeper-headless"
+    port: 5454
+  - host: "neon-safekeeper-2.neon-safekeeper-headless"
+    port: 5454
+
+# LFC（Local File Cache）本地盘配置
+lfc:
+  maxFileCacheSizeMB: 4096
+  mountPath: "/lfc"
+
+# 网络
+service:
+  type: ClusterIP
+  port: 55433
+  httpPort: 3080
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext: {}
+securityContext: {}
+
+resources:
+  limits:
+    cpu: "2"
+    memory: 4Gi
+  requests:
+    cpu: "500m"
+    memory: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+extraManifests: []

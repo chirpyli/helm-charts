@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.service.headless.name }}
+  labels:
+    {{- include "neon-safekeeper.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: pg
+      port: 5454
+      targetPort: pg
+      protocol: TCP
+    - name: http
+      port: 7676
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "neon-safekeeper.selectorLabels" . | nindent 4 }}

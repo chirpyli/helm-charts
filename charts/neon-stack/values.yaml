@@ -1,0 +1,126 @@
+# ============================================================
+# neon-stack Umbrella Chart 默认配置值
+#
+# 一站式部署完整 Neon 私有化环境：
+#   Storage Controller + Broker + Pageserver + Safekeeper + Compute
+#   + Dummy Control Plane + Init Job
+#
+# 不部署 Control Plane，使用 Storage Controller + 静态 ComputeSpec
+# ============================================================
+
+# 全局配置：所有子 Chart 共享的外部依赖引用
+global:
+  # === 外部 S3（MinIO）— 通过 Secret 引用 ===
+  s3:
+    # -- 包含 S3 凭证的 Kubernetes Secret 名称
+    # 必须包含以下 key：AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+    # AWS_ENDPOINT_URL, AWS_REGION, BUCKET_NAME
+    existingSecret: "bucket-credentials"
+
+  # === 外部 PostgreSQL — 通过 Secret 引用 ===
+  storageController:
+    # -- Storage Controller HTTP API 地址
+    endpoint: "http://neon-storage-controller:50051"
+    # -- 包含 PostgreSQL 连接串的 Secret 名称（key: uri）
+    existingPgUriSecret: "storage-controller-pg-cluster"
+
+  # === Storage Broker ===
+  storageBroker:
+    # -- Storage Broker gRPC 地址
+    endpoint: "http://neon-storage-broker:50051"
+
+  # === Pageserver ===
+  pageserver:
+    # -- Pageserver ClusterIP Service 地址（单副本时可用）
+    host: "neon-pageserver"
+    pgPort: 6400
+    httpPort: 9898
+
+  # === Safekeeper ===
+  safekeeper:
+    replicas: 3
+    headlessService: "neon-safekeeper-headless"
+    pgPort: 5454
+    httpPort: 7676
+
+  # === Dummy CP ===
+  dummyCp:
+    # -- Dummy CP 吸收器地址
+    endpoint: "http://neon-dummy-cp:8080"
+
+# ============================================================
+# 子 Chart 覆盖配置
+# ============================================================
+
+# -- Storage Broker（已有 Chart）
+neon-storage-broker:
+  enabled: true
+
+# -- Storage Controller（已有 Chart，需要 dev 模式）
+neon-storage-controller:
+  enabled: true
+  settings:
+    # 启用 dev 模式：跳过 JWT 等生产安全检查
+    devMode: true
+    # 指向 dummy-cp 吸收 compute hook 通知
+    controlPlaneUrl: "http://neon-dummy-cp:8080"
+    # dev 模式下 jwt token 可选
+    controlPlaneJwtToken: ""
+    # 数据库连接串（通过 Secret 注入）
+    databaseUrl: ""
+    # Safekeeper 数量（dev 模式可 < 3）
+    timelineSafekeeperCount: 1
+  # 生产安全配置
+  ingress:
+    enabled: false
+
+# -- Dummy Control Plane（吸收 compute hook 通知）
+neon-dummy-cp:
+  enabled: true
+
+# -- Pageserver（正常模式，非 emergency）
+neon-pageserver:
+  enabled: true
+  replicas: 1
+  baseId: 1
+  settings:
+    brokerEndpoint: "http://neon-storage-broker:50051"
+    controlPlaneApi: "http://neon-storage-controller:50051"
+  persistence:
+    size: 50Gi
+  s3Credentials:
+    existingSecret: "bucket-credentials"
+
+# -- Safekeeper（WAL 持久化，3 副本）
+neon-safekeeper:
+  enabled: true
+  replicas: 3
+  baseId: 1
+  settings:
+    brokerEndpoint: "http://neon-storage-broker:50051"
+  persistence:
+    size: 20Gi
+  s3Credentials:
+    existingSecret: "bucket-credentials"
+
+# -- Init Job（创建 tenant/timeline，注册 safekeeper）
+neon-init-job:
+  enabled: true
+
+# -- Compute（PostgreSQL 计算节点）
+neon-compute:
+  enabled: true
+  replicas: 1
+  pgVersion: 16
+  port: 55433
+  devMode: true
+  pageserver:
+    host: "neon-pageserver"
+    port: 6400
+  safekeepers:
+    - host: "neon-safekeeper-0.neon-safekeeper-headless"
+      port: 5454
+    - host: "neon-safekeeper-1.neon-safekeeper-headless"
+      port: 5454
+    - host: "neon-safekeeper-2.neon-safekeeper-headless"
+      port: 5454

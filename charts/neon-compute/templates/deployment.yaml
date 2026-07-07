@@ -1,0 +1,147 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "neon-compute.fullname" . }}
+  labels:
+    {{- include "neon-compute.labels" . | nindent 4 }}
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "neon-compute.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "neon-compute.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "neon-compute.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # initContainer: 等待 pageserver 和 safekeepers 就绪，并创建 LFC 目录
+      initContainers:
+        - name: wait-deps
+          image: busybox
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for pageserver..."
+              until nc -z {{ .Values.pageserver.host }} {{ .Values.pageserver.port }}; do sleep 2; done
+              echo "Waiting for safekeepers..."
+              {{- range .Values.safekeepers }}
+              until nc -z {{ .host }} {{ .port }}; do sleep 2; done
+              {{- end }}
+              echo "Creating LFC directory..."
+              mkdir -p {{ .Values.lfc.mountPath }}
+          volumeMounts:
+            - name: lfc
+              mountPath: {{ .Values.lfc.mountPath }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - compute_ctl
+            - --pgdata
+            - /var/db/postgres/compute
+            - -b
+            - /usr/local/bin/postgres
+            - --compute-id
+            - {{ .Values.computeId | quote }}
+            - --config
+            - /config/config.json
+            {{- if .Values.devMode }}
+            - --dev
+            {{- end }}
+            - -C
+            - {{ printf "postgresql://cloud_admin@0.0.0.0:%v/postgres" .Values.port | quote }}
+          env:
+            - name: RUST_LOG
+              value: "INFO"
+          ports:
+            - name: pgsql
+              containerPort: {{ .Values.port }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ .Values.service.httpPort }}
+              protocol: TCP
+          # 启动探针：检查 PostgreSQL 是否已准备好接受连接
+          startupProbe:
+            exec:
+              command:
+                - pg_isready
+                - -p
+                - {{ .Values.port | quote }}
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+            periodSeconds: 10
+            failureThreshold: 30
+          # 存活探针：检查 PostgreSQL 是否仍在运行
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -p
+                - {{ .Values.port | quote }}
+            periodSeconds: 15
+            timeoutSeconds: 10
+          # 就绪探针：检查 PostgreSQL 是否可以接受请求
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -p
+                - {{ .Values.port | quote }}
+            periodSeconds: 15
+            timeoutSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: lfc
+              mountPath: {{ .Values.lfc.mountPath }}
+            - name: pgdata
+              mountPath: /var/db/postgres/compute
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "neon-compute.configmapName" . }}
+        - name: lfc
+          emptyDir: {}
+        - name: pgdata
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}

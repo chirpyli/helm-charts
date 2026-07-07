@@ -1,0 +1,40 @@
+apiVersion: v2
+name: neon-stack
+description: Neon Serverless Postgres - Private Deployment (Storage Controller + No Control Plane)
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/chirpyli/helm-charts
+sources:
+  - https://github.com/chirpyli/helm-charts
+  - https://github.com/neondatabase/neon
+
+dependencies:
+  - name: neon-storage-broker
+    version: ">=1.4.0"
+    repository: "https://neondatabase.github.io/helm-charts"
+    condition: neon-storage-broker.enabled
+  - name: neon-storage-controller
+    version: ">=1.19.0"
+    repository: "https://neondatabase.github.io/helm-charts"
+    condition: neon-storage-controller.enabled
+  - name: neon-dummy-cp
+    version: "0.1.0"
+    repository: "file://../neon-dummy-cp"
+    condition: neon-dummy-cp.enabled
+  - name: neon-pageserver
+    version: "0.1.0"
+    repository: "file://../neon-pageserver"
+    condition: neon-pageserver.enabled
+  - name: neon-safekeeper
+    version: "0.1.0"
+    repository: "file://../neon-safekeeper"
+    condition: neon-safekeeper.enabled
+  - name: neon-init-job
+    version: "0.1.0"
+    repository: "file://../neon-init-job"
+    condition: neon-init-job.enabled
+  - name: neon-compute
+    version: "0.1.0"
+    repository: "file://../neon-compute"
+    condition: neon-compute.enabled

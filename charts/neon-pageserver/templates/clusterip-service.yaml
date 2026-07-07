@@ -1,0 +1,21 @@
+{{- if .Values.service.clusterIP.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "neon-pageserver.clusterIPServiceName" . }}
+  labels:
+    {{- include "neon-pageserver.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9898
+      targetPort: http
+      protocol: TCP
+    - name: pg
+      port: 6400
+      targetPort: pg
+      protocol: TCP
+  selector:
+    {{- include "neon-pageserver.selectorLabels" . | nindent 4 }}
+{{- end }}

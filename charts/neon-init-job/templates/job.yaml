@@ -1,0 +1,119 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "neon-init-job.fullname" . }}
+  labels:
+    {{- include "neon-init-job.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "-4"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "neon-init-job.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "neon-init-job.serviceAccountName" . }}
+      restartPolicy: OnFailure
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              #!/bin/bash
+              set -e
+
+              SC="{{ .Values.settings.storageControllerEndpoint }}"
+              PS="{{ .Values.settings.pageserverEndpoint }}"
+              SK_REPLICAS={{ .Values.settings.safekeeper.replicas }}
+              SK_HEADLESS="{{ .Values.settings.safekeeper.headlessService }}"
+              SK_HTTP_PORT={{ .Values.settings.safekeeper.httpPort }}
+              SK_PG_PORT={{ .Values.settings.safekeeper.pgPort }}
+              NAMESPACE="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
+
+              echo "[1/6] Waiting for Storage Controller..."
+              until curl -sf "${SC}/health"; do echo "  SC not ready, retrying..."; sleep 2; done
+              echo "  Storage Controller is ready"
+
+              echo "[2/6] Waiting for Pageserver..."
+              until curl -sf "${PS}/status"; do echo "  Pageserver not ready, retrying..."; sleep 2; done
+              echo "  Pageserver is ready"
+
+              echo "[3/6] Waiting for Safekeepers..."
+              for i in $(seq 0 $((SK_REPLICAS - 1))); do
+                SK_URL="http://neon-safekeeper-${i}.${SK_HEADLESS}.${NAMESPACE}.svc.cluster.local:${SK_HTTP_PORT}/status"
+                until curl -sf "${SK_URL}"; do echo "  Safekeeper ${i} not ready, retrying..."; sleep 2; done
+                echo "  Safekeeper ${i} is ready"
+              done
+
+              echo "[4/6] Registering Safekeepers with Storage Controller..."
+              for i in $(seq 0 $((SK_REPLICAS - 1))); do
+                SK_HOST="neon-safekeeper-${i}.${SK_HEADLESS}.${NAMESPACE}.svc.cluster.local"
+                curl -sf -X POST "${SC}/control/v1/safekeeper/${i}" \
+                  -H "Content-Type: application/json" \
+                  -d "{
+                    \"id\": ${i},
+                    \"region_id\": \"default\",
+                    \"version\": 1,
+                    \"host\": \"${SK_HOST}\",
+                    \"port\": ${SK_PG_PORT},
+                    \"http_port\": ${SK_HTTP_PORT},
+                    \"availability_zone_id\": \"az1\",
+                    \"active\": true
+                  }"
+                echo "  Registered safekeeper ${i}"
+              done
+
+              echo "[5/6] Creating Tenant..."
+              TENANT_ID=$(printf '%08x%08x%08x%08x' $RANDOM $RANDOM $RANDOM $RANDOM)
+              curl -sf -X POST "${SC}/v1/tenant" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"new_tenant_id\": \"${TENANT_ID}\",
+                  \"placement_policy\": {\"Attached\": 0},
+                  \"config\": {}
+                }"
+              echo "  Created tenant: ${TENANT_ID}"
+
+              echo "[6/6] Creating Timeline..."
+              TIMELINE_ID=$(printf '%08x%08x%08x%08x' $RANDOM $RANDOM $RANDOM $RANDOM)
+              curl -sf -X POST "${SC}/v1/tenant/${TENANT_ID}/timeline" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"new_timeline_id\": \"${TIMELINE_ID}\",
+                  \"mode\": \"Bootstrap\",
+                  \"pg_version\": 16
+                }"
+              echo "  Created timeline: ${TIMELINE_ID}"
+
+              echo "Done! TENANT_ID=${TENANT_ID} TIMELINE_ID=${TIMELINE_ID}"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
