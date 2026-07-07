@@ -4,7 +4,7 @@
 
 基于 [neondatabase/helm-charts](https://github.com/neondatabase/helm-charts) 扩展的 Neon 私有化部署 Helm Charts，新增了 pageserver、safekeeper、compute、dummy-cp 等组件 chart，以及一键部署的 neon-stack umbrella chart。
 
-上游 chart（storage-broker、storage-controller）保持与官方仓库同步，自建 chart 用于补全私有化部署所需的缺失组件。
+上游 chart（storage-broker、storage-controller）保持与官方仓库同步，自建 chart 用于补全私有化部署所需的缺失组件。本仓库仅供学习使用，未达到生产环境可用。
 
 ## 使用方法
 
@@ -36,11 +36,9 @@ helm install neon-stack . -f values.yaml
 helm install neon-dummy-cp ./charts/neon-dummy-cp
 ```
 
-## 贡献
+## 感谢
 
-本项目源代码托管在 Github：<https://github.com/chirpyli/helm-charts>
-
-欢迎贡献！上游代码请参考 [neondatabase/helm-charts](https://github.com/neondatabase/helm-charts/)。
+上游代码请参考 [neondatabase/helm-charts](https://github.com/neondatabase/helm-charts/)。
 
 ## 许可证
 
