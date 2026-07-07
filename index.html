@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChirpyLi Helm Charts</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: linear-gradient(135deg, #0a0a1a 0%, #1a1a3e 50%, #0d0d2b 100%);
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 60px 24px;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+    header h1 {
+      font-size: 2.4rem;
+      font-weight: 700;
+      background: linear-gradient(90deg, #60a5fa, #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 12px;
+    }
+    header p {
+      color: #94a3b8;
+      font-size: 1.1rem;
+    }
+    .badge {
+      display: inline-block;
+      background: rgba(96, 165, 250, 0.15);
+      color: #60a5fa;
+      border: 1px solid rgba(96, 165, 250, 0.3);
+      border-radius: 6px;
+      padding: 4px 12px;
+      font-size: 0.85rem;
+      font-family: "SF Mono", "Fira Code", monospace;
+      margin-top: 16px;
+    }
+    .section {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 32px;
+      margin-bottom: 24px;
+      backdrop-filter: blur(10px);
+    }
+    .section h2 {
+      font-size: 1.3rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #cbd5e1;
+    }
+    .section h2::before {
+      content: "# ";
+      color: #60a5fa;
+    }
+    .code-block {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 20px 24px;
+      overflow-x: auto;
+      position: relative;
+    }
+    .code-block code {
+      font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+      font-size: 0.9rem;
+      color: #e6edf3;
+      line-height: 1.8;
+      white-space: pre;
+      display: block;
+    }
+    .code-block .copy-btn {
+      position: absolute;
+      top: 10px;
+      right: 14px;
+      background: #30363d;
+      border: 1px solid #484f58;
+      color: #c9d1d9;
+      padding: 4px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.75rem;
+      transition: background 0.2s;
+    }
+    .code-block .copy-btn:hover { background: #484f58; }
+    .hl-comment { color: #8b949e; }
+    .hl-cmd { color: #7ee787; }
+    .hl-flag { color: #a5d6ff; }
+    .hl-uname { color: #ffa657; }
+    .hl-subcmd { color: #d2a8ff; }
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 16px;
+    }
+    .chart-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 10px;
+      padding: 20px 22px;
+      transition: border-color 0.2s, transform 0.2s;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .chart-card:hover {
+      border-color: rgba(96, 165, 250, 0.4);
+      transform: translateY(-2px);
+    }
+    .chart-card .chart-name {
+      font-weight: 600;
+      font-size: 1rem;
+      color: #e2e8f0;
+    }
+    .chart-card .chart-vers {
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.8rem;
+      color: #60a5fa;
+    }
+    .chart-card .chart-desc {
+      font-size: 0.82rem;
+      color: #94a3b8;
+      line-height: 1.5;
+      flex: 1;
+    }
+    .chart-card .chart-sources {
+      display: flex;
+      gap: 12px;
+      font-size: 0.78rem;
+    }
+    .chart-card .chart-sources a {
+      color: #a78bfa;
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    .chart-card .chart-sources a:hover { color: #818cf8; }
+    footer {
+      text-align: center;
+      color: #64748b;
+      font-size: 0.82rem;
+      margin-top: 48px;
+      padding-top: 24px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    footer a {
+      color: #60a5fa;
+      text-decoration: none;
+    }
+    footer a:hover { text-decoration: underline; }
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-top: 8px;
+    }
+    .feature-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 0.92rem;
+      color: #cbd5e1;
+    }
+    .feature-item .icon {
+      font-size: 1.2rem;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    @media (max-width: 640px) {
+      .container { padding: 32px 16px; }
+      header h1 { font-size: 1.6rem; }
+      .code-block { padding: 16px; }
+      .code-block code { font-size: 0.75rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>ChirpyLi Helm Charts</h1>
+      <p>Neon Serverless Postgres — 私有化部署 Helm Chart 仓库</p>
+      <span class="badge">helm repo add chirpyli https://chirpyli.github.io/helm-charts/</span>
+    </header>
+
+    <div class="section">
+      <h2>快速开始</h2>
+      <div class="code-block" id="install-block">
+        <button class="copy-btn" onclick="copyCode()">复制</button>
+        <code><span class="hl-comment"># 添加 Helm 仓库</span>
+<span class="hl-cmd">helm</span> <span class="hl-subcmd">repo add</span> <span class="hl-uname">chirpyli</span> <span class="hl-flag">https://chirpyli.github.io/helm-charts/</span>
+
+<span class="hl-comment"># 更新仓库索引</span>
+<span class="hl-cmd">helm</span> <span class="hl-subcmd">repo update</span>
+
+<span class="hl-comment"># 查看可用 charts</span>
+<span class="hl-cmd">helm</span> <span class="hl-subcmd">search repo</span> <span class="hl-uname">chirpyli</span>
+
+<span class="hl-comment"># 安装 neon-stack（完整私有化部署）</span>
+<span class="hl-cmd">helm</span> <span class="hl-subcmd">install</span> <span class="hl-uname">my-neon</span> <span class="hl-flag">chirpyli/neon-stack</span> <span class="hl-flag">--namespace</span> <span class="hl-uname">neon</span> <span class="hl-flag">--create-namespace</span></code>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>可用 Charts</h2>
+      <div class="charts-grid" id="charts-grid">
+        <div class="chart-card">
+          <span class="chart-name">neon-stack 🌩️</span>
+          <span class="chart-vers">最新版本</span>
+          <span class="chart-desc">Neon 完整私有化部署 Umbrella Chart，一键部署全部组件</span>
+          <span class="chart-sources"><a href="https://github.com/neondatabase/neon" target="_blank">Neon 源码</a></span>
+        </div>
+        <div class="chart-card">
+          <span class="chart-name">neon-pageserver</span>
+          <span class="chart-vers">核心组件</span>
+          <span class="chart-desc">Neon Pageserver：处理 WAL 日志，提供 page 服务</span>
+        </div>
+        <div class="chart-card">
+          <span class="chart-name">neon-safekeeper</span>
+          <span class="chart-vers">核心组件</span>
+          <span class="chart-desc">Neon Safekeeper：WAL 可靠存储，确保数据持久性</span>
+        </div>
+        <div class="chart-card">
+          <span class="chart-name">neon-compute</span>
+          <span class="chart-vers">核心组件</span>
+          <span class="chart-desc">Neon Compute：PostgreSQL 计算节点</span>
+        </div>
+        <div class="chart-card">
+          <span class="chart-name">neon-storage-controller</span>
+          <span class="chart-vers">基础设施</span>
+          <span class="chart-desc">Neon Storage Controller：管理存储分片与调度</span>
+        </div>
+        <div class="chart-card">
+          <span class="chart-name">neon-storage-broker</span>
+          <span class="chart-vers">基础设施</span>
+          <span class="chart-desc">Neon Storage Broker：对象存储代理服务</span>
+        </div>
+        <div class="chart-card">
+          <span class="chart-name">neon-proxy</span>
+          <span class="chart-vers">网络层</span>
+          <span class="chart-desc">Neon Proxy：客户端连接代理与路由</span>
+        </div>
+        <div class="chart-card">
+          <span class="chart-name">neon-pg-sni-router</span>
+          <span class="chart-vers">网络层</span>
+          <span class="chart-desc">SNI Router：基于 SNI 的多租户路由</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>特性</h2>
+      <div class="feature-grid">
+        <div class="feature-item"><span class="icon">⚡</span> Serverless Postgres — 计算存储分离</div>
+        <div class="feature-item"><span class="icon">📦</span> 一键私有化部署 (neon-stack umbrella)</div>
+        <div class="feature-item"><span class="icon">🔄</span> Branch 分支 — 即时数据库克隆</div>
+        <div class="feature-item"><span class="icon">💾</span> WAL 可靠存储 — Safekeeper 多副本</div>
+        <div class="feature-item"><span class="icon">📊</span> 弹性伸缩 — 计算节点按需扩展</div>
+        <div class="feature-item"><span class="icon">🌐</span> 多租户路由 — SNI + Proxy 代理层</div>
+        <div class="feature-item"><span class="icon">🪣</span> 对象存储后端 — S3 兼容存储</div>
+        <div class="feature-item"><span class="icon">📈</span> Prometheus 监控集成</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>查找 Chart 版本</h2>
+      <div class="code-block">
+        <code><span class="hl-comment"># 搜索特定 chart 的所有可用版本</span>
+<span class="hl-cmd">helm</span> <span class="hl-subcmd">search repo</span> <span class="hl-uname">chirpyli</span> <span class="hl-flag">--versions</span>
+
+<span class="hl-comment"># 查看 chart 详细信息</span>
+<span class="hl-cmd">helm</span> <span class="hl-subcmd">show chart</span> <span class="hl-uname">chirpyli/neon-stack</span>
+
+<span class="hl-comment"># 查看 chart 可配置参数</span>
+<span class="hl-cmd">helm</span> <span class="hl-subcmd">show values</span> <span class="hl-uname">chirpyli/neon-stack</span></code>
+      </div>
+    </div>
+
+    <footer>
+      <p>
+        <a href="https://github.com/chirpyli/helm-charts" target="_blank">GitHub 仓库</a> ·
+        <a href="https://github.com/neondatabase/neon" target="_blank">Neon 上游项目</a> ·
+        <a href="https://neon.tech/docs" target="_blank">Neon 文档</a>
+      </p>
+      <p style="margin-top: 8px;">Powered by Helm · Hosted on GitHub Pages</p>
+    </footer>
+  </div>
+
+  <script>
+    function copyCode() {
+      const block = document.getElementById('install-block');
+      const code = block.querySelector('code').innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        const btn = block.querySelector('.copy-btn');
+        btn.textContent = '已复制!';
+        setTimeout(() => { btn.textContent = '复制'; }, 1500);
+      });
+    }
+  </script>
+</body>
+</html>
