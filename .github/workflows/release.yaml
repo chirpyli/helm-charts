@@ -54,3 +54,12 @@ jobs:
           skip_existing: true
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Deploy index.html to gh-pages
+        run: |
+          git fetch origin gh-pages
+          git checkout gh-pages
+          cp assets/index.html index.html
+          git add index.html
+          git diff --cached --quiet || git commit -m "Update landing page"
+          git push origin gh-pages
