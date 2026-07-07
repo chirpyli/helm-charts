@@ -35,7 +35,7 @@ jobs:
           VALIDATE_ALL_CODEBASE: false
           VALIDATE_KUBERNETES_KUBEVAL: false
           VALIDATE_YAML: false
-          DEFAULT_BRANCH: main
+          DEFAULT_BRANCH: develop
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # conflict with python flask8 format
           VALIDATE_PYTHON_BLACK: false

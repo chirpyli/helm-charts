@@ -11,17 +11,10 @@ permissions:
 jobs:
   codespell:
     name: Codespell
-    runs-on:
-      group: neondatabase-protected-runner-group
-      labels: linux-ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@4d991eb9b905ef189e4c376166672c3f2f230481 # v2.11.0
-        with:
-          egress-policy: audit
-
       - name: Checkout Code
-        uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.7.0
+        uses: actions/checkout@v4
       - name: Codespell
         uses: codespell-project/actions-codespell@fad9339798e1ee3fe979ae0a022c931786a408b8 # master
         with:
