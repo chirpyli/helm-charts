@@ -59,7 +59,14 @@ jobs:
         run: |
           git fetch origin gh-pages
           git checkout gh-pages
-          cp assets/index.html index.html
-          git add index.html
-          git diff --cached --quiet || git commit -m "Update landing page"
-          git push origin gh-pages
+          # 从 develop 分支提取 index.html，与 gh-pages 上当前版本做 diff
+          # 仅在内容有变化时才提交推送，避免无意义的空 commit
+          if ! git show develop:assets/index.html | diff -q - index.html >/dev/null 2>&1; then
+            echo "index.html changed, updating..."
+            git show develop:assets/index.html > index.html
+            git add index.html
+            git commit -m "Update landing page"
+            git push origin gh-pages
+          else
+            echo "index.html unchanged, skipping deploy"
+          fi
