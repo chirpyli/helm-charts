@@ -6,7 +6,7 @@ metadata:
     {{- include "neon-safekeeper.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
-  clusterIP: None
+  clusterIP: None          # Headless Service ， safekeeper StatefulSet
   publishNotReadyAddresses: true
   ports:
     - name: pg
