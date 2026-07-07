@@ -24,6 +24,10 @@ settings:
   sentryUrl: ""
   # settings.sentryEnvironment -- "development" 或 "production"，在 Sentry 中用于过滤问题
   sentryEnvironment: "development"
+  # settings.devMode -- 启用开发模式，跳过某些生产环境的校验
+  devMode: true
+  # settings.timelineSafekeeperCount -- 每个 timeline 的 safekeeper 副本数
+  timelineSafekeeperCount: 1
   # 数据库的 postgresql:// 连接 URL
   databaseUrl: ""
   # 与 pageserver 认证的 JWT token

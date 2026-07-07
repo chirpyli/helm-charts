@@ -54,9 +54,16 @@ spec:
             */}}
             - 0.0.0.0:{{ .Values.service.port }}
             - --public-key={{ .Values.settings.publicKey | toJson }}
+          {{- if .Values.settings.devMode }}
+            - --dev
+          {{- end }}
           {{- if .Values.settings.controlPlaneUrl }}
             - --control-plane-url
             - {{ .Values.settings.controlPlaneUrl | quote }}
+          {{- end }}
+          {{- if .Values.settings.timelineSafekeeperCount }}
+            - --timeline-safekeeper-count
+            - {{ .Values.settings.timelineSafekeeperCount | quote }}
           {{- end }}
           {{- if .Values.settings.lbmManagementUrl }}
             - --lbm-management-url
