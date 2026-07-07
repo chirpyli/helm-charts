@@ -1,0 +1,225 @@
+apiVersion: v1
+entries:
+  aws-cost-reporter:
+  - apiVersion: v2
+    appVersion: v0.1.0
+    created: "2026-07-07T07:00:45.999169138Z"
+    description: AWS Cost Reporter
+    digest: 91b979552791ef649896b880fad442c2ec1aac595ddd0dc1d5f047ecfed9d2dd
+    name: aws-cost-reporter
+    sources:
+    - https://github.com/neondatabase/aws-cost-reporter
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/aws-cost-reporter-1.0.1/aws-cost-reporter-1.0.1.tgz
+    version: 1.0.1
+  neon-compute:
+  - apiVersion: v2
+    appVersion: latest
+    created: "2026-07-07T07:00:46.15086524Z"
+    description: Neon Compute Node - PostgreSQL compute with neon extension
+    digest: 6fd651ee6c8540f8828d539864cbb6316407fe64ba396216206ef5742019ce7d
+    home: https://github.com/chirpyli/helm-charts
+    kubeVersion: ^1.18.x-x
+    name: neon-compute
+    sources:
+    - https://github.com/chirpyli/helm-charts
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/neon-compute-0.1.0/neon-compute-0.1.0.tgz
+    version: 0.1.0
+  neon-dummy-cp:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-07-07T07:00:46.27927887Z"
+    description: Dummy HTTP server for absorbing Neon compute hook notifications
+    digest: 4e961f23f9cf37b7d886e701f6405e02b3b9ac610627e1476ee3d21fee23fd0f
+    home: https://github.com/chirpyli/helm-charts
+    kubeVersion: ^1.18.x-x
+    name: neon-dummy-cp
+    sources:
+    - https://github.com/chirpyli/helm-charts
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/neon-dummy-cp-0.1.0/neon-dummy-cp-0.1.0.tgz
+    version: 0.1.0
+  neon-endpoint-storage:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-07-07T07:00:46.409794953Z"
+    description: Neon Endpoint Storage
+    digest: 57866a8ddf01e300e31db84001f83e5dee244fcbcbd40776c960a86d0b25a105
+    home: https://neon.com
+    kubeVersion: ^1.18.x-x
+    name: neon-endpoint-storage
+    sources:
+    - https://github.com/neondatabase/neon
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/neon-endpoint-storage-1.0.3/neon-endpoint-storage-1.0.3.tgz
+    version: 1.0.3
+  neon-init-job:
+  - apiVersion: v2
+    appVersion: latest
+    created: "2026-07-07T07:00:46.554069192Z"
+    description: Neon Init Job - tenant/timeline creation and safekeeper registration
+    digest: 4f72301a2d498b56e130b195b96ed638fc0c8f919259314b1b451ebf0aa60184
+    home: https://github.com/chirpyli/helm-charts
+    kubeVersion: ^1.18.x-x
+    name: neon-init-job
+    sources:
+    - https://github.com/chirpyli/helm-charts
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/neon-init-job-0.1.0/neon-init-job-0.1.0.tgz
+    version: 0.1.0
+  neon-pageserver:
+  - apiVersion: v2
+    appVersion: latest
+    created: "2026-07-07T07:00:46.690885601Z"
+    description: Neon Pageserver - page storage layer
+    digest: 83cfe0aef738d50ca583384e8dff1a679cf492d3fcdf2d4293ff9cd3c3373c04
+    home: https://github.com/chirpyli/helm-charts
+    kubeVersion: ^1.18.x-x
+    name: neon-pageserver
+    sources:
+    - https://github.com/chirpyli/helm-charts
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/neon-pageserver-0.1.0/neon-pageserver-0.1.0.tgz
+    version: 0.1.0
+  neon-pg-sni-router:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-07-07T07:00:46.832633122Z"
+    description: Neon Postgres SNI Router
+    digest: bb0146899819670f932a717d27d9b130174214201e4341a57425dd087eec763a
+    home: https://neon.tech
+    kubeVersion: ^1.18.x-x
+    name: neon-pg-sni-router
+    sources:
+    - https://github.com/neondatabase/neon
+    - https://github.com/neondatabase/helm-charts
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/neon-pg-sni-router-0.0.6/neon-pg-sni-router-0.0.6.tgz
+    version: 0.0.6
+  neon-proxy:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-07-07T07:00:47.025370235Z"
+    description: Neon Proxy
+    digest: bbbcdca9845ddd22fae9931fdc7db63fc22055a160d2e6c00b322e3f574503e7
+    home: https://neon.tech
+    kubeVersion: ^1.18.x-x
+    name: neon-proxy
+    sources:
+    - https://github.com/neondatabase/neon
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/neon-proxy-1.15.0/neon-proxy-1.15.0.tgz
+    version: 1.15.0
+  neon-safekeeper:
+  - apiVersion: v2
+    appVersion: latest
+    created: "2026-07-07T07:00:47.22847446Z"
+    description: Neon Safekeeper - WAL durability layer
+    digest: c9f0c782a80ac7f8b8db995e66865a9f1bc33da3f71cdabeeb6421d8c2137db5
+    home: https://github.com/chirpyli/helm-charts
+    kubeVersion: ^1.18.x-x
+    name: neon-safekeeper
+    sources:
+    - https://github.com/chirpyli/helm-charts
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/neon-safekeeper-0.1.0/neon-safekeeper-0.1.0.tgz
+    version: 0.1.0
+  neon-stack:
+  - apiVersion: v2
+    appVersion: latest
+    created: "2026-07-07T07:00:47.437570159Z"
+    dependencies:
+    - condition: neon-storage-broker.enabled
+      name: neon-storage-broker
+      repository: https://neondatabase.github.io/helm-charts
+      version: '>=1.4.0'
+    - condition: neon-storage-controller.enabled
+      name: neon-storage-controller
+      repository: https://neondatabase.github.io/helm-charts
+      version: '>=1.19.0'
+    - condition: neon-dummy-cp.enabled
+      name: neon-dummy-cp
+      repository: file://../neon-dummy-cp
+      version: 0.1.0
+    - condition: neon-pageserver.enabled
+      name: neon-pageserver
+      repository: file://../neon-pageserver
+      version: 0.1.0
+    - condition: neon-safekeeper.enabled
+      name: neon-safekeeper
+      repository: file://../neon-safekeeper
+      version: 0.1.0
+    - condition: neon-init-job.enabled
+      name: neon-init-job
+      repository: file://../neon-init-job
+      version: 0.1.0
+    - condition: neon-compute.enabled
+      name: neon-compute
+      repository: file://../neon-compute
+      version: 0.1.0
+    description: Neon Serverless Postgres - Private Deployment (Storage Controller
+      + No Control Plane)
+    digest: 0947806c42272ae97f59148f076ddb1da7a329d7585344ba0de6c8644d790810
+    home: https://github.com/chirpyli/helm-charts
+    name: neon-stack
+    sources:
+    - https://github.com/chirpyli/helm-charts
+    - https://github.com/neondatabase/neon
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/neon-stack-0.1.0/neon-stack-0.1.0.tgz
+    version: 0.1.0
+  neon-storage-broker:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-07-07T07:00:47.631131408Z"
+    description: Neon storage broker
+    digest: bf723c25f0ad00896d14073d1ba5227249dc343650c70c67a2a82a3be7bdf513
+    home: https://neon.tech
+    kubeVersion: ^1.18.x-x
+    name: neon-storage-broker
+    sources:
+    - https://github.com/neondatabase/neon
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/neon-storage-broker-1.4.0/neon-storage-broker-1.4.0.tgz
+    version: 1.4.0
+  neon-storage-controller:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-07-07T07:00:47.864077511Z"
+    description: Neon storage controller
+    digest: 686e2c84ad1a77b6bd888228b029296be30e7c89dea0adcb33718edac3a524e4
+    home: https://neon.tech
+    kubeVersion: ^1.18.x-x
+    name: neon-storage-controller
+    sources:
+    - https://github.com/neondatabase/neon
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/neon-storage-controller-1.19.0/neon-storage-controller-1.19.0.tgz
+    version: 1.19.0
+  neon-storage-scrubber:
+  - apiVersion: v2
+    appVersion: v0.1.0
+    created: "2026-07-07T07:00:48.051849959Z"
+    description: neon-storage-scrubber
+    digest: 0c2a146ba13c7024024a77a3c615c4c51655560e91e60c3ed67e3c31aa3df17b
+    name: neon-storage-scrubber
+    sources:
+    - https://github.com/neondatabase/neon/tree/main/storage_scrubber
+    type: application
+    urls:
+    - https://github.com/chirpyli/helm-charts/releases/download/neon-storage-scrubber-1.4.0/neon-storage-scrubber-1.4.0.tgz
+    version: 1.4.0
+generated: "2026-07-07T07:00:48.051854838Z"
