@@ -41,13 +41,18 @@ spec:
             - -c
             - |
               SAFEKEEPER_ID=$(({{ .Values.baseId }} + $(echo ${POD_NAME##*-})))
+              # 构建多行 TOML 格式的 remote-storage 配置
+              TOML="endpoint=\"$(AWS_ENDPOINT_URL)\"
+              bucket_name=\"$(BUCKET_NAME)\"
+              bucket_region=\"$(AWS_REGION)\"
+              prefix_in_bucket=\"{{ .Values.remoteStorage.prefixInBucket }}\""
               exec safekeeper \
                 --listen-pg={{ .Values.settings.listenPg }} \
                 --listen-http={{ .Values.settings.listenHttp }} \
                 --id=${SAFEKEEPER_ID} \
                 --broker-endpoint={{ .Values.settings.brokerEndpoint }} \
                 -D /data \
-                --remote-storage="endpoint=\"$(AWS_ENDPOINT_URL)\",bucket_name=\"$(BUCKET_NAME)\",bucket_region=\"$(AWS_REGION)\",prefix_in_bucket=\"{{ .Values.remoteStorage.prefixInBucket }}\""
+                --remote-storage="$TOML"
           env:
             - name: RUST_LOG
               value: "INFO"

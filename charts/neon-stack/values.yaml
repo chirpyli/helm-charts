@@ -114,17 +114,13 @@ neon-safekeeper:
   settings:
     brokerEndpoint: "http://neon-storage-broker:50051"
   persistence:
-    size: 20Gi
+    size: 10Gi
   s3Credentials:
     existingSecret: "bucket-credentials"
 
 # -- Init Job（创建 tenant/timeline，注册 safekeeper）
 neon-init-job:
   enabled: true
-  # 使用国内镜像源（DaoCloud 代理），避免 Docker Hub 无法访问
-  image:
-    repository: docker.m.daocloud.io/curlimages/curl
-    tag: "latest"
 
 # -- Compute（PostgreSQL 计算节点）
 neon-compute:

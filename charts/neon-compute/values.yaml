@@ -57,11 +57,11 @@ securityContext: {}
 
 resources:
   limits:
-    cpu: "2"
+    cpu: "4"
     memory: 4Gi
   requests:
-    cpu: "500m"
-    memory: 1Gi
+    cpu: "1"
+    memory: 512Mi
 
 nodeSelector: {}
 tolerations: []

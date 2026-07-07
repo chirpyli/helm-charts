@@ -1,5 +1,6 @@
+# 使用国内镜像源（DaoCloud 代理），避免 Docker Hub 无法访问
 image:
-  repository: curlimages/curl
+  repository: docker.m.daocloud.io/curlimages/curl
   pullPolicy: IfNotPresent
   tag: "latest"
 

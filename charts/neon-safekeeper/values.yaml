@@ -57,7 +57,7 @@ persistence:
   # persistence.enabled -- 是否启用持久化存储
   enabled: true
   # persistence.size -- 持久卷大小
-  size: 50Gi
+  size: 10Gi
 
 # 网络配置
 service:
@@ -90,11 +90,11 @@ securityContext: {}
 # -- 资源限制与请求
 resources:
   limits:
-    cpu: "1"
-    memory: 2Gi
+    cpu: "4"
+    memory: 4Gi
   requests:
-    cpu: "500m"
-    memory: 1Gi
+    cpu: "1"
+    memory: 512Mi
 
 # -- Pod 节点选择器标签
 nodeSelector: {}
