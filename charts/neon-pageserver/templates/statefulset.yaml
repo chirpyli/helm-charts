@@ -35,8 +35,8 @@ spec:
       {{- end }}
       initContainers:
         - name: init-metadata
-          image: busybox:latest
-          imagePullPolicy: IfNotPresent
+          image: "{{ .Values.initContainer.repository }}:{{ .Values.initContainer.tag }}"
+          imagePullPolicy: {{ .Values.initContainer.pullPolicy }}
           command:
             - sh
             - -c

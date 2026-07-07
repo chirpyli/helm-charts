@@ -11,6 +11,15 @@ image:
   # -- 覆盖镜像标签，默认为 Chart 的 appVersion
   tag: "latest"
 
+# init 容器镜像（metadata 初始化）
+initContainer:
+  # -- init 容器镜像仓库
+  repository: docker.m.daocloud.io/library/busybox
+  # -- init 容器镜像标签
+  tag: "latest"
+  # -- init 容器镜像拉取策略
+  pullPolicy: IfNotPresent
+
 # -- 指定 docker-registry 的 Secret 名称数组
 imagePullSecrets: []
 
