@@ -1,0 +1,2 @@
+# helm dependency update 下载的制品，不需要提交
+charts/*.tgz

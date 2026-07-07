@@ -1,0 +1,9 @@
+# chart-releaser 打包制品
+.cr-release-packages/
+
+# chart 依赖下载的 tgz 制品
+charts/*/charts/*.tgz
+
+# OS
+.DS_Store
+Thumbs.db
