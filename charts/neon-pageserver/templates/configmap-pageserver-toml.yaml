@@ -29,8 +29,9 @@ data:
     # IO 模式
     virtual_file_io_mode = "{{ .Values.settings.virtualFileIoMode }}"
 
-    # 认证：默认 Trust（无需 JWT）
-    http_auth = "{{ .Values.settings.httpAuth }}"
+    # 认证：默认 Trust（无需 JWT），与 ConfigToml 字段名严格对齐
+    http_auth_type = "Trust"
+    pg_auth_type = "Trust"
 
     # 本地盘驱逐策略
     [disk_usage_based_eviction]

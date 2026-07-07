@@ -53,7 +53,9 @@ spec:
             # In the container, use the same port as service.
             */}}
             - 0.0.0.0:{{ .Values.service.port }}
+          {{- if .Values.settings.publicKey }}
             - --public-key={{ .Values.settings.publicKey | toJson }}
+          {{- end }}
           {{- if .Values.settings.devMode }}
             - --dev
           {{- end }}

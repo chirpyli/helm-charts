@@ -20,33 +20,33 @@ global:
   # === 外部 PostgreSQL — 通过 Secret 引用 ===
   storageController:
     # -- Storage Controller HTTP API 地址
-    endpoint: "http://neon-storage-controller:50051"
+    endpoint: "http://neon-stack-neon-storage-controller-svc:50051"
     # -- 包含 PostgreSQL 连接串的 Secret 名称（key: uri）
     existingPgUriSecret: "storage-controller-pg-cluster"
 
   # === Storage Broker ===
   storageBroker:
     # -- Storage Broker gRPC 地址
-    endpoint: "http://neon-storage-broker:50051"
+    endpoint: "http://neon-stack-neon-storage-broker:50051"
 
   # === Pageserver ===
   pageserver:
     # -- Pageserver ClusterIP Service 地址（单副本时可用）
-    host: "neon-pageserver"
+    host: "neon-stack-neon-pageserver"
     pgPort: 6400
     httpPort: 9898
 
   # === Safekeeper ===
   safekeeper:
     replicas: 3
-    headlessService: "neon-safekeeper-headless"
+    headlessService: "neon-stack-neon-safekeeper-headless"
     pgPort: 5454
     httpPort: 7676
 
   # === Dummy CP ===
   dummyCp:
     # -- Dummy CP 吸收器地址
-    endpoint: "http://neon-dummy-cp:8080"
+    endpoint: "http://neon-stack-neon-dummy-cp:8080"
 
 # ============================================================
 # 子 Chart 覆盖配置
@@ -67,7 +67,7 @@ neon-storage-controller:
     # 启用 dev 模式：跳过 JWT 等生产安全检查
     devMode: true
     # 指向 dummy-cp 吸收 compute hook 通知
-    controlPlaneUrl: "http://neon-dummy-cp:8080"
+    controlPlaneUrl: "http://neon-stack-neon-dummy-cp:8080"
     # dev 模式下 jwt token 可选
     controlPlaneJwtToken: ""
     # 数据库连接串（通过 Secret 注入）
@@ -94,8 +94,8 @@ neon-pageserver:
   image:
     repository: ghcr.io/neondatabase/neon
   settings:
-    brokerEndpoint: "http://neon-storage-broker:50051"
-    controlPlaneApi: "http://neon-storage-controller:50051"
+    brokerEndpoint: "http://neon-stack-neon-storage-broker:50051"
+    controlPlaneApi: "http://neon-stack-neon-storage-controller-svc:50051"
   persistence:
     size: 10Gi
   s3Credentials:
@@ -112,7 +112,7 @@ neon-safekeeper:
   image:
     repository: ghcr.io/neondatabase/neon
   settings:
-    brokerEndpoint: "http://neon-storage-broker:50051"
+    brokerEndpoint: "http://neon-stack-neon-storage-broker:50051"
   persistence:
     size: 10Gi
   s3Credentials:
@@ -121,6 +121,16 @@ neon-safekeeper:
 # -- Init Job（创建 tenant/timeline，注册 safekeeper）
 neon-init-job:
   enabled: true
+  settings:
+    storageControllerEndpoint: "http://neon-stack-neon-storage-controller-svc:50051"
+    pageserverEndpoint: "http://neon-stack-neon-pageserver:9898"
+    safekeeper:
+      replicas: 3
+      baseId: 1
+      podNamePrefix: "neon-stack-neon-safekeeper"
+      headlessService: "neon-stack-neon-safekeeper-headless"
+      pgPort: 5454
+      httpPort: 7676
 
 # -- Compute（PostgreSQL 计算节点）
 neon-compute:
@@ -130,12 +140,12 @@ neon-compute:
   port: 55433
   devMode: true
   pageserver:
-    host: "neon-pageserver"
+    host: "neon-stack-neon-pageserver"
     port: 6400
   safekeepers:
-    - host: "neon-safekeeper-0.neon-safekeeper-headless"
+    - host: "neon-stack-neon-safekeeper-0.neon-stack-neon-safekeeper-headless"
       port: 5454
-    - host: "neon-safekeeper-1.neon-safekeeper-headless"
+    - host: "neon-stack-neon-safekeeper-1.neon-stack-neon-safekeeper-headless"
       port: 5454
-    - host: "neon-safekeeper-2.neon-safekeeper-headless"
+    - host: "neon-stack-neon-safekeeper-2.neon-stack-neon-safekeeper-headless"
       port: 5454

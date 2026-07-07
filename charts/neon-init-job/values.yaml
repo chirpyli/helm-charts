@@ -13,6 +13,10 @@ settings:
   pageserverEndpoint: "http://neon-pageserver:9898"
   safekeeper:
     replicas: 3
+    # -- Safekeeper 节点 ID 基数，注册时 ID = baseId + 序号（与 neon-safekeeper 的 baseId 保持一致）
+    baseId: 0
+    # -- Safekeeper StatefulSet Pod 名称前缀（由 umbrella chart 覆盖为带 release 前缀的完整名称）
+    podNamePrefix: "neon-safekeeper"
     headlessService: "neon-safekeeper-headless"
     pgPort: 5454
     httpPort: 7676

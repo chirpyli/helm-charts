@@ -84,11 +84,16 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
-            - pageserver
-            - -D
-            - /data/.neon
+            - /bin/sh
             - -c
-            - /config/pageserver.toml
+            - |
+              # pageserver 从 workdir 读取 pageserver.toml（不支持 envsubst，需手动替换环境变量）
+              cat /config/pageserver.toml | \
+                sed -e "s|\$(AWS_ENDPOINT_URL)|$AWS_ENDPOINT_URL|g" \
+                    -e "s|\$(BUCKET_NAME)|$BUCKET_NAME|g" \
+                    -e "s|\$(AWS_REGION)|$AWS_REGION|g" \
+                > /data/.neon/pageserver.toml
+              exec pageserver -D /data/.neon
           env:
             - name: RUST_LOG
               value: "INFO"
