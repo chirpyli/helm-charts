@@ -55,10 +55,14 @@ global:
 # -- Storage Broker（已有 Chart）
 neon-storage-broker:
   enabled: true
+  image:
+    repository: ghcr.io/neondatabase/neon
 
 # -- Storage Controller（已有 Chart，需要 dev 模式）
 neon-storage-controller:
   enabled: true
+  image:
+    repository: ghcr.io/neondatabase/neon
   settings:
     # 启用 dev 模式：跳过 JWT 等生产安全检查
     devMode: true
@@ -69,7 +73,7 @@ neon-storage-controller:
     # 数据库连接串（通过 Secret 注入）
     databaseUrl: ""
     # Safekeeper 数量（dev 模式可 < 3）
-    timelineSafekeeperCount: 1
+    timelineSafekeeperCount: 3
   # 生产安全配置
   ingress:
     enabled: false
@@ -77,25 +81,36 @@ neon-storage-controller:
 # -- Dummy Control Plane（吸收 compute hook 通知）
 neon-dummy-cp:
   enabled: true
+  # 使用国内镜像源（DaoCloud 代理），避免 Docker Hub 无法访问
+  image:
+    repository: docker.m.daocloud.io/library/python
+    tag: "3.11-slim"
 
 # -- Pageserver（正常模式，非 emergency）
 neon-pageserver:
   enabled: true
   replicas: 1
   baseId: 1
+  image:
+    repository: ghcr.io/neondatabase/neon
   settings:
     brokerEndpoint: "http://neon-storage-broker:50051"
     controlPlaneApi: "http://neon-storage-controller:50051"
   persistence:
-    size: 50Gi
+    size: 10Gi
   s3Credentials:
     existingSecret: "bucket-credentials"
+  # 强制调度到 worker 节点，避免 control-plane 节点 local-path provisioner 超时
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
 
 # -- Safekeeper（WAL 持久化，3 副本）
 neon-safekeeper:
   enabled: true
   replicas: 3
   baseId: 1
+  image:
+    repository: ghcr.io/neondatabase/neon
   settings:
     brokerEndpoint: "http://neon-storage-broker:50051"
   persistence:
@@ -106,6 +121,10 @@ neon-safekeeper:
 # -- Init Job（创建 tenant/timeline，注册 safekeeper）
 neon-init-job:
   enabled: true
+  # 使用国内镜像源（DaoCloud 代理），避免 Docker Hub 无法访问
+  image:
+    repository: docker.m.daocloud.io/curlimages/curl
+    tag: "latest"
 
 # -- Compute（PostgreSQL 计算节点）
 neon-compute:

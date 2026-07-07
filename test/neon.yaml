@@ -1,0 +1,33 @@
+---
+# 创建namespace neon
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: neon
+
+---
+# 外部 MinIO S3 凭证（运行在 :9000，非 K8s 内部）
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bucket-credentials
+  namespace: neon
+stringData:
+  AWS_ACCESS_KEY_ID: "minioadmin"
+  AWS_ENDPOINT_URL: "http://192.168.232.128:9000"
+  AWS_REGION: "us-east-1"
+  AWS_SECRET_ACCESS_KEY: "minioadmin"
+  BUCKET_NAME: "neondata"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: storage-controller-pg-cluster
+  namespace: neon
+type: Opaque
+stringData:
+  uri: "postgres://storage_controller:storage_controller@192.168.232.128:5432/storage_controller"
+
+
+

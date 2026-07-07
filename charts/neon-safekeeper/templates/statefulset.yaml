@@ -47,7 +47,7 @@ spec:
                 --id=${SAFEKEEPER_ID} \
                 --broker-endpoint={{ .Values.settings.brokerEndpoint }} \
                 -D /data \
-                --remote-storage="endpoint='$(AWS_ENDPOINT_URL)',bucket_name='$(BUCKET_NAME)',bucket_region='$(AWS_REGION)',prefix_in_bucket='{{ .Values.remoteStorage.prefixInBucket }}'"
+                --remote-storage="endpoint=\"$(AWS_ENDPOINT_URL)\",bucket_name=\"$(BUCKET_NAME)\",bucket_region=\"$(AWS_REGION)\",prefix_in_bucket=\"{{ .Values.remoteStorage.prefixInBucket }}\""
           env:
             - name: RUST_LOG
               value: "INFO"

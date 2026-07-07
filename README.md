@@ -1,6 +1,6 @@
 # Neon 私有化部署 Helm Charts
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License](<https://img.shields.io/badge/License-Apache%202.0-blue.svg>)](https://opensource.org/licenses/Apache-2.0)
 
 基于 [neondatabase/helm-charts](https://github.com/neondatabase/helm-charts) 扩展的 Neon 私有化部署 Helm Charts，新增了 pageserver、safekeeper、compute、dummy-cp 等组件 chart，以及一键部署的 neon-stack umbrella chart。
 
@@ -27,7 +27,7 @@ cd charts/neon-stack
 helm dependency update
 
 # 4. 部署
-helm install neon-stack . -f values.yaml
+helm install neon-stack . -f values.yaml --namespace neon
 ```
 
 ### 单独部署某个组件
