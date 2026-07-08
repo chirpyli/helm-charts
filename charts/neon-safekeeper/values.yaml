@@ -63,8 +63,8 @@ persistence:
 service:
   # Headless Service 配置（StatefulSet 必须）
   headless:
-    # service.headless.name -- Headless Service 名称
-    name: neon-safekeeper-headless
+    # service.headless.name -- Headless Service 名称（空值则自动使用 {release}-neon-safekeeper-headless）
+    name: ""
 
 serviceAccount:
   # serviceAccount.create -- 指定是否创建 ServiceAccount

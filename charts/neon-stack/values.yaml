@@ -124,6 +124,13 @@ neon-init-job:
   settings:
     storageControllerEndpoint: "http://neon-stack-neon-storage-controller-svc:50051"
     pageserverEndpoint: "http://neon-stack-neon-pageserver:9898"
+    # -- 租户 ID（32 位 hex，不含连字符的 UUID）。留空则自动生成。
+    # 如果预设，必须与 neon-compute.tenantId 保持一致。
+    tenantId: "dc38beec6b7645139518229fcf4c0235"
+    # -- 时序线 ID（32 位 hex，不含连字符的 UUID）。留空则自动生成。
+    # 如果预设，必须与 neon-compute.timelineId 保持一致。
+    timelineId: "bb278410ea8046a39e3fa33be0aa82dd"
+    pgVersion: 16
     safekeeper:
       replicas: 3
       baseId: 1
@@ -160,6 +167,14 @@ neon-compute:
   pgVersion: 16
   port: 55433
   devMode: true
+  # -- 租户 ID（32 位 hex，不含连字符的 UUID）。必须与 neon-init-job.settings.tenantId 保持一致。
+  tenantId: "dc38beec6b7645139518229fcf4c0235"
+  # -- 时序线 ID（32 位 hex，不含连字符的 UUID）。必须与 neon-init-job.settings.timelineId 保持一致。
+  timelineId: "bb278410ea8046a39e3fa33be0aa82dd"
+  # 清空 pageserver.host（neon-compute 默认值 "neon-pageserver" 在实际部署中不存在），
+  # 让模板 fallback 到 headless service DNS（neon-stack-neon-pageserver-0.headless-svc）
+  pageserver:
+    host: ""
   # pageservers 配置：根据 neon-pageserver 的 replicas 自动生成所有 pageserver 连接信息
   # pageserver_connstring 将生成为：
   #   "host=pod-0.headless-svc port=6400,host=pod-1.headless-svc port=6400,..."

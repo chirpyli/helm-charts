@@ -46,6 +46,9 @@ spec:
               SK_HEADLESS="{{ .Values.settings.safekeeper.headlessService }}"
               SK_HTTP_PORT={{ .Values.settings.safekeeper.httpPort }}
               SK_PG_PORT={{ .Values.settings.safekeeper.pgPort }}
+              TENANT_ID="{{ .Values.settings.tenantId }}"
+              TIMELINE_ID="{{ .Values.settings.timelineId }}"
+              PG_VERSION={{ .Values.settings.pgVersion }}
               NAMESPACE="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
 
               echo "[1/6] Waiting for Storage Controller..."
@@ -88,25 +91,38 @@ spec:
               done
 
               echo "[5/6] Creating Tenant..."
-              TENANT_ID=$(cat /proc/sys/kernel/random/uuid | tr -d '-')
-              curl -sf -X POST "${SC}/v1/tenant" \
+              # 如果未预设 tenant_id，则自动生成
+              if [ -z "${TENANT_ID}" ]; then
+                TENANT_ID=$(cat /proc/sys/kernel/random/uuid | tr -d '-')
+              fi
+              CREATE_RESP=$(curl -sS -X POST "${SC}/v1/tenant" \
                 -H "Content-Type: application/json" \
                 -d "{
                   \"new_tenant_id\": \"${TENANT_ID}\",
-                  \"placement_policy\": {\"Attached\": 0},
-                  \"config\": {}
-                }"
+                  \"placement_policy\": {\"Attached\": 0}
+                }")
+              if [ $? -ne 0 ]; then
+                echo "  Tenant creation failed"
+                exit 1
+              fi
               echo "  Created tenant: ${TENANT_ID}"
 
               echo "[6/6] Creating Timeline..."
-              TIMELINE_ID=$(cat /proc/sys/kernel/random/uuid | tr -d '-')
-              curl -sf -X POST "${SC}/v1/tenant/${TENANT_ID}/timeline" \
+              # 如果未预设 timeline_id，则自动生成
+              if [ -z "${TIMELINE_ID}" ]; then
+                TIMELINE_ID=$(cat /proc/sys/kernel/random/uuid | tr -d '-')
+              fi
+              TL_RESP=$(curl -sS -X POST "${SC}/v1/tenant/${TENANT_ID}/timeline" \
                 -H "Content-Type: application/json" \
                 -d "{
                   \"new_timeline_id\": \"${TIMELINE_ID}\",
                   \"mode\": \"Bootstrap\",
-                  \"pg_version\": 16
-                }"
+                  \"pg_version\": ${PG_VERSION}
+                }")
+              if [ $? -ne 0 ]; then
+                echo "  Timeline creation failed"
+                exit 1
+              fi
               echo "  Created timeline: ${TIMELINE_ID}"
 
               echo "Done! TENANT_ID=${TENANT_ID} TIMELINE_ID=${TIMELINE_ID}"

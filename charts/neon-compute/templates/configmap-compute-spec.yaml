@@ -7,49 +7,56 @@ metadata:
 data:
   config.json: |
     {
-      "format_version": 1.0,
-      "cluster": {
-        "cluster_id": "k8s-deploy",
-        "name": "default",
-        "state": "active",
-        "roles": [{
-          "name": "cloud_admin",
-          "encrypted_password": null,
-          "login": true,
-          "superuser": true
-        }],
-        "databases": [{
-          "name": "postgres",
-          "owner": "cloud_admin"
-        }],
-        "settings": [
-          {"name": "fsync", "value": "off", "vartype": "bool"},
-          {"name": "wal_level", "value": "logical", "vartype": "enum"},
-          {"name": "port", "value": "{{ .Values.port }}", "vartype": "integer"},
-          {"name": "shared_buffers", "value": "1MB", "vartype": "string"},
-          {"name": "listen_addresses", "value": "0.0.0.0", "vartype": "string"},
-          {"name": "shared_preload_libraries", "value": "neon,pg_stat_statements", "vartype": "string"},
-          {"name": "neon.file_cache_path", "value": "{{ .Values.lfc.mountPath }}/file.cache", "vartype": "string"},
-          {"name": "neon.max_file_cache_size", "value": "{{ .Values.lfc.maxFileCacheSizeMB }}", "vartype": "integer"}
-        ]
-      },
-      "tenant_id": "{{ .Values.tenantId }}",
-      "timeline_id": "{{ .Values.timelineId }}",
-      {{- /* pageserver_connstring: 逗号分隔的多 pageserver 连接串，与 libpagestore.c 中的 neon.pageserver_connstring GUC 对应 */}}
-      {{- /* 每个 pageserver 对应一个 shard，格式: host=<pod>.<headless-svc> port=<pg-port> */}}
-      {{- if gt (int .Values.pageservers.replicas) 1 }}
-      "pageserver_connstring": "{{- range $i := until (int .Values.pageservers.replicas) }}{{- if $i }},{{ end }}host={{ $.Values.pageservers.podNamePrefix }}-{{ $i }}.{{ $.Values.pageservers.headlessService }} port={{ $.Values.pageservers.port }}{{- end }}",
-      {{- else if .Values.pageserver.host }}
-      "pageserver_connstring": "host={{ .Values.pageserver.host }} port={{ .Values.pageserver.port }}",
-      {{- else }}
-      "pageserver_connstring": "host={{ .Values.pageservers.podNamePrefix }}-0.{{ .Values.pageservers.headlessService }} port={{ .Values.pageservers.port }}",
-      {{- end }}
-      "safekeeper_connstrings": [
-        {{- range $i, $sk := .Values.safekeepers }}
-        {{- if $i}},{{ end }}"host={{ $sk.host }} port={{ $sk.port }}"
+      "spec": {
+        "format_version": 1.0,
+        "cluster": {
+          "cluster_id": "k8s-deploy",
+          "name": "default",
+          "state": "active",
+          "roles": [{
+            "name": "cloud_admin",
+            "encrypted_password": null,
+            "login": true,
+            "superuser": true
+          }],
+          "databases": [{
+            "name": "postgres",
+            "owner": "cloud_admin"
+          }],
+          "settings": [
+            {"name": "fsync", "value": "off", "vartype": "bool"},
+            {"name": "wal_level", "value": "logical", "vartype": "enum"},
+            {"name": "port", "value": "{{ .Values.port }}", "vartype": "integer"},
+            {"name": "shared_buffers", "value": "1MB", "vartype": "string"},
+            {"name": "listen_addresses", "value": "0.0.0.0", "vartype": "string"},
+            {"name": "shared_preload_libraries", "value": "neon,pg_stat_statements", "vartype": "string"},
+            {"name": "neon.file_cache_path", "value": "{{ .Values.lfc.mountPath }}/file.cache", "vartype": "string"},
+            {"name": "neon.max_file_cache_size", "value": "{{ .Values.lfc.maxFileCacheSizeMB }}", "vartype": "integer"}
+          ]
+        },
+        "tenant_id": "{{ .Values.tenantId }}",
+        "timeline_id": "{{ .Values.timelineId }}",
+        {{- /* pageserver_connstring: 逗号分隔的多 pageserver 连接串，与 libpagestore.c 中的 neon.pageserver_connstring GUC 对应 */}}
+        {{- /* 每个 pageserver 对应一个 shard，格式: host=<pod>.<headless-svc> port=<pg-port> */}}
+        {{- if gt (int .Values.pageservers.replicas) 1 }}
+        "pageserver_connstring": "{{- range $i := until (int .Values.pageservers.replicas) }}{{- if $i }},{{ end }}host={{ $.Values.pageservers.podNamePrefix }}-{{ $i }}.{{ $.Values.pageservers.headlessService }} port={{ $.Values.pageservers.port }}{{- end }}",
+        {{- else if .Values.pageserver.host }}
+        "pageserver_connstring": "host={{ .Values.pageserver.host }} port={{ .Values.pageserver.port }}",
+        {{- else }}
+        "pageserver_connstring": "host={{ .Values.pageservers.podNamePrefix }}-0.{{ .Values.pageservers.headlessService }} port={{ .Values.pageservers.port }}",
         {{- end }}
-      ],
-      "mode": "Primary",
-      "storage_auth_token": null,
-      "suspend_timeout_seconds": 3600
+        "safekeeper_connstrings": [
+          {{- range $i, $sk := .Values.safekeepers }}
+          {{- if $i}},{{ end }}"host={{ $sk.host }} port={{ $sk.port }}"
+          {{- end }}
+        ],
+        "mode": "Primary",
+        "storage_auth_token": null,
+        "suspend_timeout_seconds": 3600
+      },
+      "compute_ctl_config": {
+        "jwks": {
+          "keys": []
+        }
+      }
     }

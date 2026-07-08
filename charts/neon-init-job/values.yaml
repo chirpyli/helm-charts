@@ -11,6 +11,12 @@ fullnameOverride: ""
 settings:
   storageControllerEndpoint: "http://neon-storage-controller:50051"
   pageserverEndpoint: "http://neon-pageserver:9898"
+  # -- 租户和时序线 ID（32 位 hex，不含连字符的 UUID）。
+  # 留空则自动生成。如果预设，需同时配置 neon-compute.tenantId / timelineId 保持一致。
+  tenantId: ""
+  timelineId: ""
+  # -- PostgreSQL 主版本号
+  pgVersion: 16
   safekeeper:
     replicas: 3
     # -- Safekeeper 节点 ID 基数，注册时 ID = baseId + 序号（与 neon-safekeeper 的 baseId 保持一致）

@@ -1,3 +1,4 @@
+# 计算节点必须有tenantID,timelineID，需先创建租户和分支
 apiVersion: apps/v1
 kind: Deployment
 metadata:

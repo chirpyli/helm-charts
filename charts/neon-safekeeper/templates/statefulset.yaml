@@ -7,7 +7,7 @@ metadata:
   labels:
     {{- include "neon-safekeeper.labels" . | nindent 4 }}
 spec:
-  serviceName: {{ .Values.service.headless.name }}
+  serviceName: {{ default (printf "%s-headless" (include "neon-safekeeper.fullname" .)) .Values.service.headless.name }}
   replicas: {{ .Values.replicas }}
   podManagementPolicy: Parallel    # 并行启动和终止
   selector:
