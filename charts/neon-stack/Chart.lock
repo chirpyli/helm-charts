@@ -1,9 +1,9 @@
 dependencies:
 - name: neon-storage-broker
-  repository: https://neondatabase.github.io/helm-charts
+  repository: file://../neon-storage-broker
   version: 1.4.0
 - name: neon-storage-controller
-  repository: https://neondatabase.github.io/helm-charts
+  repository: file://../neon-storage-controller
   version: 1.19.0
 - name: neon-dummy-cp
   repository: file://../neon-dummy-cp
@@ -18,10 +18,10 @@ dependencies:
   repository: file://../neon-init-job
   version: 0.1.0
 - name: neon-storage-scrubber
-  repository: https://neondatabase.github.io/helm-charts
+  repository: file://../neon-storage-scrubber
   version: 1.4.0
 - name: neon-compute
   repository: file://../neon-compute
   version: 0.1.0
-digest: sha256:d51f17a8ab710886d22b9abbccc870af71c49d7b84315298986d28b153d6ed41
-generated: "2026-07-08T14:40:50.19516749+08:00"
+digest: sha256:5d896e51495efecc6ae5061495bfee2daadec3806eabf46f157c4bf159fbb0e7
+generated: "2026-07-08T15:34:27.476867969+08:00"

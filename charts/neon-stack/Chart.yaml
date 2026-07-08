@@ -12,11 +12,11 @@ sources:
 dependencies:
   - name: neon-storage-broker
     version: ">=1.4.0"
-    repository: "https://neondatabase.github.io/helm-charts"
+    repository: "file://../neon-storage-broker"
     condition: neon-storage-broker.enabled
   - name: neon-storage-controller
     version: ">=1.19.0"
-    repository: "https://neondatabase.github.io/helm-charts"
+    repository: "file://../neon-storage-controller"
     condition: neon-storage-controller.enabled
   - name: neon-dummy-cp
     version: "0.1.0"
@@ -36,7 +36,7 @@ dependencies:
     condition: neon-init-job.enabled
   - name: neon-storage-scrubber
     version: ">=1.4.0"
-    repository: "https://neondatabase.github.io/helm-charts"
+    repository: "file://../neon-storage-scrubber"
     condition: neon-storage-scrubber.enabled
   - name: neon-compute
     version: "0.1.0"

@@ -53,7 +53,8 @@ spec:
             # In the container, use the same port as service.
             */}}
             - 0.0.0.0:{{ .Values.service.port }}
-          {{- if .Values.settings.publicKey }}
+          {{- /* 仅当 publicKey 为非空字符串时才传递，空字符串会被 JwtAuth::from_key 拒绝 */}}
+          {{- if and .Values.settings.publicKey (ne .Values.settings.publicKey "") }}
             - --public-key={{ .Values.settings.publicKey | toJson }}
           {{- end }}
           {{- if .Values.settings.devMode }}
