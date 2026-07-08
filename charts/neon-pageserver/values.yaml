@@ -81,14 +81,14 @@ persistence:
 service:
   # Headless Service（必须）：SC 点对点路由
   headless:
-    # -- Headless Service 名称
-    name: neon-pageserver-headless
+    # -- Headless Service 名称（空值则自动使用 {release}-neon-pageserver-headless）
+    name: ""
   # ClusterIP Service（可选）：单副本时便于外部访问
   clusterIP:
     # -- 启用 ClusterIP Service
     enabled: true
-    # -- ClusterIP Service 名称
-    name: neon-pageserver
+    # -- ClusterIP Service 名称（空值则自动使用 {release}-neon-pageserver）
+    name: ""
 
 # Prometheus 指标配置
 metrics:

@@ -65,14 +65,14 @@ Create the name of the service account to use
 Headless Service name
 */}}
 {{- define "neon-pageserver.headlessServiceName" -}}
-{{- .Values.service.headless.name }}
+{{- default (printf "%s-headless" (include "neon-pageserver.fullname" .)) .Values.service.headless.name }}
 {{- end }}
 
 {{/*
 ClusterIP Service name
 */}}
 {{- define "neon-pageserver.clusterIPServiceName" -}}
-{{- .Values.service.clusterIP.name }}
+{{- default (include "neon-pageserver.fullname" .) .Values.service.clusterIP.name }}
 {{- end }}
 
 {{/*

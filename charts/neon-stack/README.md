@@ -20,13 +20,13 @@ Neon Serverless Postgres 私有化一站式部署 Umbrella Chart（无 Control P
 
 **限制说明**
 
-| 限制项 | 说明 |
-|-------|------|
-| 无 Serverless | 不支持冷启动/自动休眠/按需唤醒 |
-| 无 Proxy | 直连 Compute 节点，无路由/认证代理层 |
-| 无 JWT | 所有组件 Trust 模式，适用于内网/私有环境 |
-| 固定拓扑 | Safekeeper/Pagserver 数量不可动态变更 |
-| 无预热 | 缺少 endpoint_storage，无计算节点预热功能 |
+| 限制项        | 说明                                      |
+| ------------- | ----------------------------------------- |
+| 无 Serverless | 不支持冷启动/自动休眠/按需唤醒            |
+| 无 Proxy      | 直连 Compute 节点，无路由/认证代理层      |
+| 无 JWT        | 所有组件 Trust 模式，适用于内网/私有环境  |
+| 固定拓扑      | Safekeeper/Pagserver 数量不可动态变更     |
+| 无预热        | 缺少 endpoint_storage，无计算节点预热功能 |
 
 ## 架构
 
@@ -86,10 +86,10 @@ Storage Controller ──notify──────▶ Dummy CP (compute hook 吸�
 
 ### 外部服务
 
-| 服务 | 用途 | 必需 |
-|------|------|:----:|
-| S3 / MinIO | 远程持久化存储层（Pageserver 数据 + Safekeeper WAL offload） | ✅ |
-| PostgreSQL | Storage Controller 元数据存储 | ✅ |
+| 服务       | 用途                                                         | 必需 |
+| ---------- | ------------------------------------------------------------ | :--: |
+| S3 / MinIO | 远程持久化存储层（Pageserver 数据 + Safekeeper WAL offload） |  ✅  |
+| PostgreSQL | Storage Controller 元数据存储                                |  ✅  |
 
 ### Kubernetes Secret
 
@@ -115,16 +115,16 @@ kubectl create secret generic storage-controller-pg-cluster -n neon \
 
 ## 子 Chart 一览
 
-| Chart | 来源 | 工作负载 | 副本数 | 描述 |
-|-------|------|----------|:------:|------|
-| `neon-storage-broker` | 上游 Helm 仓库 | Deployment | 1 | 服务发现与心跳，组件启动时注册 |
-| `neon-storage-controller` | 上游 Helm 仓库 | Deployment | 1 | 核心调度器，管理 tenant/timeline/node 生命周期 |
-| `neon-dummy-cp` | 本地 Chart | Deployment | 1 | 伪 Control Plane HTTP Server，吸收 compute hook 通知并返回 200 |
-| `neon-pageserver` | 本地 Chart | StatefulSet | 1 | 页面存储层，从 S3 拉取数据页并响应 Compute 页面请求 |
-| `neon-safekeeper` | 本地 Chart | StatefulSet | 3 | WAL 持久化层，接收 Compute 的 WAL 流并上传到 S3 |
-| `neon-init-job` | 本地 Chart | Helm Hook Job | 1 | post-install 钩子，自动创建 tenant/timeline 并注册 safekeeper |
-| `neon-storage-scrubber` | 上游 Helm 仓库 | CronJob | 1 | 每日物理 GC，清理 S3 中未被引用的垃圾 layer 对象 |
-| `neon-compute` | 本地 Chart | Deployment | 1 | PostgreSQL 计算节点，通过静态 config.json 获取集群拓扑 |
+| Chart                       | 来源           | 工作负载      | 副本数 | 描述                                                           |
+| --------------------------- | -------------- | ------------- | :----: | -------------------------------------------------------------- |
+| `neon-storage-broker`     | 上游 Helm 仓库 | Deployment    |   1   | 服务发现与心跳，组件启动时注册                                 |
+| `neon-storage-controller` | 上游 Helm 仓库 | Deployment    |   1   | 核心调度器，管理 tenant/timeline/node 生命周期                 |
+| `neon-dummy-cp`           | 本地 Chart     | Deployment    |   1   | 伪 Control Plane HTTP Server，吸收 compute hook 通知并返回 200 |
+| `neon-pageserver`         | 本地 Chart     | StatefulSet   |   1   | 页面存储层，从 S3 拉取数据页并响应 Compute 页面请求            |
+| `neon-safekeeper`         | 本地 Chart     | StatefulSet   |   3   | WAL 持久化层，接收 Compute 的 WAL 流并上传到 S3                |
+| `neon-init-job`           | 本地 Chart     | Helm Hook Job |   1   | post-install 钩子，自动创建 tenant/timeline 并注册 safekeeper  |
+| `neon-storage-scrubber`   | 上游 Helm 仓库 | CronJob       |   1   | 每日物理 GC，清理 S3 中未被引用的垃圾 layer 对象               |
+| `neon-compute`            | 本地 Chart     | Deployment    |   1   | PostgreSQL 计算节点，通过静态 config.json 获取集群拓扑         |
 
 ## 安装
 
@@ -168,20 +168,20 @@ kubectl delete pvc -n neon -l app.kubernetes.io/instance=neon-stack
 
 全局配置为所有子 Chart 提供跨组件引用。
 
-| 参数 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `global.s3.existingSecret` | string | `"bucket-credentials"` | 包含 S3 凭证的 Secret 名称 |
-| `global.storageController.endpoint` | string | `"http://neon-stack-neon-storage-controller-svc:50051"` | Storage Controller HTTP API 地址 |
-| `global.storageController.existingPgUriSecret` | string | `"storage-controller-pg-cluster"` | PostgreSQL 连接串 Secret 名称 |
-| `global.storageBroker.endpoint` | string | `"http://neon-stack-neon-storage-broker:50051"` | Storage Broker gRPC 地址 |
-| `global.pageserver.host` | string | `"neon-stack-neon-pageserver"` | Pageserver Service 地址 |
-| `global.pageserver.pgPort` | int | `6400` | Pageserver PostgreSQL 协议端口 |
-| `global.pageserver.httpPort` | int | `9898` | Pageserver HTTP API 端口 |
-| `global.safekeeper.replicas` | int | `3` | Safekeeper 副本数 |
-| `global.safekeeper.headlessService` | string | `"neon-stack-neon-safekeeper-headless"` | Safekeeper Headless Service 名称 |
-| `global.safekeeper.pgPort` | int | `5454` | Safekeeper PostgreSQL 协议端口 |
-| `global.safekeeper.httpPort` | int | `7676` | Safekeeper HTTP API 端口 |
-| `global.dummyCp.endpoint` | string | `"http://neon-stack-neon-dummy-cp:8080"` | Dummy CP 地址 |
+| 参数                                             | 类型   | 默认值                                                    | 描述                             |
+| ------------------------------------------------ | ------ | --------------------------------------------------------- | -------------------------------- |
+| `global.s3.existingSecret`                     | string | `"bucket-credentials"`                                  | 包含 S3 凭证的 Secret 名称       |
+| `global.storageController.endpoint`            | string | `"http://neon-stack-neon-storage-controller-svc:50051"` | Storage Controller HTTP API 地址 |
+| `global.storageController.existingPgUriSecret` | string | `"storage-controller-pg-cluster"`                       | PostgreSQL 连接串 Secret 名称    |
+| `global.storageBroker.endpoint`                | string | `"http://neon-stack-neon-storage-broker:50051"`         | Storage Broker gRPC 地址         |
+| `global.pageserver.host`                       | string | `"neon-stack-neon-pageserver"`                          | Pageserver Service 地址          |
+| `global.pageserver.pgPort`                     | int    | `6400`                                                  | Pageserver PostgreSQL 协议端口   |
+| `global.pageserver.httpPort`                   | int    | `9898`                                                  | Pageserver HTTP API 端口         |
+| `global.safekeeper.replicas`                   | int    | `3`                                                     | Safekeeper 副本数                |
+| `global.safekeeper.headlessService`            | string | `"neon-stack-neon-safekeeper-headless"`                 | Safekeeper Headless Service 名称 |
+| `global.safekeeper.pgPort`                     | int    | `5454`                                                  | Safekeeper PostgreSQL 协议端口   |
+| `global.safekeeper.httpPort`                   | int    | `7676`                                                  | Safekeeper HTTP API 端口         |
+| `global.dummyCp.endpoint`                      | string | `"http://neon-stack-neon-dummy-cp:8080"`                | Dummy CP 地址                    |
 
 ### 子 Chart 覆盖配置
 
@@ -189,96 +189,96 @@ kubectl delete pvc -n neon -l app.kubernetes.io/instance=neon-stack
 
 ### Storage Broker
 
-| 参数 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `neon-storage-broker.enabled` | bool | `true` | 启用 Storage Broker |
-| `neon-storage-broker.image.repository` | string | `"ghcr.io/neondatabase/neon"` | 镜像仓库 |
+| 参数                                     | 类型   | 默认值                          | 描述                |
+| ---------------------------------------- | ------ | ------------------------------- | ------------------- |
+| `neon-storage-broker.enabled`          | bool   | `true`                        | 启用 Storage Broker |
+| `neon-storage-broker.image.repository` | string | `"ghcr.io/neondatabase/neon"` | 镜像仓库            |
 
 ### Storage Controller
 
-| 参数 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `neon-storage-controller.enabled` | bool | `true` | 启用 Storage Controller |
-| `neon-storage-controller.settings.devMode` | bool | `true` | 开发模式：跳过 JWT、允许 < 3 SK |
-| `neon-storage-controller.settings.controlPlaneUrl` | string | `"http://neon-stack-neon-dummy-cp:8080"` | Control Plane URL（指向 Dummy CP） |
-| `neon-storage-controller.settings.databaseUrl` | string | — | PostgreSQL 连接串 |
-| `neon-storage-controller.settings.timelineSafekeeperCount` | int | `3` | Timeline 所需 Safekeeper 数量 |
+| 参数                                                         | 类型   | 默认值                                     | 描述                               |
+| ------------------------------------------------------------ | ------ | ------------------------------------------ | ---------------------------------- |
+| `neon-storage-controller.enabled`                          | bool   | `true`                                   | 启用 Storage Controller            |
+| `neon-storage-controller.settings.devMode`                 | bool   | `true`                                   | 开发模式：跳过 JWT、允许 < 3 SK    |
+| `neon-storage-controller.settings.controlPlaneUrl`         | string | `"http://neon-stack-neon-dummy-cp:8080"` | Control Plane URL（指向 Dummy CP） |
+| `neon-storage-controller.settings.databaseUrl`             | string | —                                         | PostgreSQL 连接串                  |
+| `neon-storage-controller.settings.timelineSafekeeperCount` | int    | `3`                                      | Timeline 所需 Safekeeper 数量      |
 
 ### Dummy CP
 
-| 参数 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `neon-dummy-cp.enabled` | bool | `true` | 启用 Dummy Control Plane |
+| 参数                               | 类型   | 默认值                                    | 描述                                             |
+| ---------------------------------- | ------ | ----------------------------------------- | ------------------------------------------------ |
+| `neon-dummy-cp.enabled`          | bool   | `true`                                  | 启用 Dummy Control Plane                         |
 | `neon-dummy-cp.image.repository` | string | `"docker.m.daocloud.io/library/python"` | 镜像（使用 DaoCloud 代理避免 Docker Hub 不可达） |
-| `neon-dummy-cp.image.tag` | string | `"3.11-slim"` | 镜像标签 |
+| `neon-dummy-cp.image.tag`        | string | `"3.11-slim"`                           | 镜像标签                                         |
 
 ### Pageserver
 
-| 参数 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `neon-pageserver.enabled` | bool | `true` | 启用 Pageserver |
-| `neon-pageserver.replicas` | int | `1` | 副本数 |
-| `neon-pageserver.baseId` | int | `1` | 节点 ID 基数 |
-| `neon-pageserver.settings.brokerEndpoint` | string | `"http://neon-stack-neon-storage-broker:50051"` | Broker 地址 |
-| `neon-pageserver.settings.controlPlaneApi` | string | `"http://neon-stack-neon-storage-controller-svc:50051/upcall/v1"` | SC upcall API 地址（**注意 `/upcall/v1` 后缀**） |
-| `neon-pageserver.s3Credentials.existingSecret` | string | `"bucket-credentials"` | S3 凭证 Secret |
-| `neon-pageserver.persistence.size` | string | `"10Gi"` | PVC 大小 |
+| 参数                                             | 类型   | 默认值                                                              | 描述                                                     |
+| ------------------------------------------------ | ------ | ------------------------------------------------------------------- | -------------------------------------------------------- |
+| `neon-pageserver.enabled`                      | bool   | `true`                                                            | 启用 Pageserver                                          |
+| `neon-pageserver.replicas`                     | int    | `1`                                                               | 副本数                                                   |
+| `neon-pageserver.baseId`                       | int    | `1`                                                               | 节点 ID 基数                                             |
+| `neon-pageserver.settings.brokerEndpoint`      | string | `"http://neon-stack-neon-storage-broker:50051"`                   | Broker 地址                                              |
+| `neon-pageserver.settings.controlPlaneApi`     | string | `"http://neon-stack-neon-storage-controller-svc:50051/upcall/v1"` | SC upcall API 地址（**注意 `/upcall/v1` 后缀**） |
+| `neon-pageserver.s3Credentials.existingSecret` | string | `"bucket-credentials"`                                            | S3 凭证 Secret                                           |
+| `neon-pageserver.persistence.size`             | string | `"10Gi"`                                                          | PVC 大小                                                 |
 
 ### Safekeeper
 
-| 参数 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `neon-safekeeper.enabled` | bool | `true` | 启用 Safekeeper |
-| `neon-safekeeper.replicas` | int | `3` | 副本数 |
-| `neon-safekeeper.baseId` | int | `1` | 节点 ID 基数 |
-| `neon-safekeeper.settings.brokerEndpoint` | string | `"http://neon-stack-neon-storage-broker:50051"` | Broker 地址 |
-| `neon-safekeeper.s3Credentials.existingSecret` | string | `"bucket-credentials"` | S3 凭证 Secret |
-| `neon-safekeeper.persistence.size` | string | `"10Gi"` | PVC 大小 |
+| 参数                                             | 类型   | 默认值                                            | 描述            |
+| ------------------------------------------------ | ------ | ------------------------------------------------- | --------------- |
+| `neon-safekeeper.enabled`                      | bool   | `true`                                          | 启用 Safekeeper |
+| `neon-safekeeper.replicas`                     | int    | `3`                                             | 副本数          |
+| `neon-safekeeper.baseId`                       | int    | `1`                                             | 节点 ID 基数    |
+| `neon-safekeeper.settings.brokerEndpoint`      | string | `"http://neon-stack-neon-storage-broker:50051"` | Broker 地址     |
+| `neon-safekeeper.s3Credentials.existingSecret` | string | `"bucket-credentials"`                          | S3 凭证 Secret  |
+| `neon-safekeeper.persistence.size`             | string | `"10Gi"`                                        | PVC 大小        |
 
 ### Init Job
 
-| 参数 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `neon-init-job.enabled` | bool | `true` | 启用初始化 Job |
-| `neon-init-job.settings.storageControllerEndpoint` | string | `"http://neon-stack-neon-storage-controller-svc:50051"` | SC API 地址 |
-| `neon-init-job.settings.pageserverEndpoint` | string | `"http://neon-stack-neon-pageserver:9898"` | Pageserver HTTP 地址 |
-| `neon-init-job.settings.safekeeper.replicas` | int | `3` | Safekeeper 副本数 |
-| `neon-init-job.settings.safekeeper.podNamePrefix` | string | `"neon-stack-neon-safekeeper"` | Safekeeper Pod 名称前缀 |
-| `neon-init-job.settings.safekeeper.headlessService` | string | `"neon-stack-neon-safekeeper-headless"` | Headless Service 名称 |
+| 参数                                                  | 类型   | 默认值                                                    | 描述                    |
+| ----------------------------------------------------- | ------ | --------------------------------------------------------- | ----------------------- |
+| `neon-init-job.enabled`                             | bool   | `true`                                                  | 启用初始化 Job          |
+| `neon-init-job.settings.storageControllerEndpoint`  | string | `"http://neon-stack-neon-storage-controller-svc:50051"` | SC API 地址             |
+| `neon-init-job.settings.pageserverEndpoint`         | string | `"http://neon-stack-neon-pageserver:9898"`              | Pageserver HTTP 地址    |
+| `neon-init-job.settings.safekeeper.replicas`        | int    | `3`                                                     | Safekeeper 副本数       |
+| `neon-init-job.settings.safekeeper.podNamePrefix`   | string | `"neon-stack-neon-safekeeper"`                          | Safekeeper Pod 名称前缀 |
+| `neon-init-job.settings.safekeeper.headlessService` | string | `"neon-stack-neon-safekeeper-headless"`                 | Headless Service 名称   |
 
 ### Storage Scrubber
 
-| 参数 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `neon-storage-scrubber.enabled` | bool | `true` | 启用 Storage Scrubber |
-| `neon-storage-scrubber.s3Credentials.existingSecret` | string | `"bucket-credentials"` | S3 凭证 Secret |
-| `neon-storage-scrubber.storageScrubber.schedule` | string | `"0 3 * * *"` | CronJob 调度表达式 |
-| `neon-storage-scrubber.storageScrubber.command` | list | `["pageserver-physical-gc", "--min-age=1week"]` | GC 命令 |
+| 参数                                                   | 类型   | 默认值                                            | 描述                  |
+| ------------------------------------------------------ | ------ | ------------------------------------------------- | --------------------- |
+| `neon-storage-scrubber.enabled`                      | bool   | `true`                                          | 启用 Storage Scrubber |
+| `neon-storage-scrubber.s3Credentials.existingSecret` | string | `"bucket-credentials"`                          | S3 凭证 Secret        |
+| `neon-storage-scrubber.storageScrubber.schedule`     | string | `"0 3 * * *"`                                   | CronJob 调度表达式    |
+| `neon-storage-scrubber.storageScrubber.command`      | list   | `["pageserver-physical-gc", "--min-age=1week"]` | GC 命令               |
 
 ### Compute
 
-| 参数 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `neon-compute.enabled` | bool | `true` | 启用 Compute |
-| `neon-compute.replicas` | int | `1` | 副本数 |
-| `neon-compute.pgVersion` | int | `16` | PostgreSQL 主版本号 |
-| `neon-compute.port` | int | `55433` | Compute 监听端口 |
-| `neon-compute.pageserver.host` | string | `"neon-stack-neon-pageserver"` | Pageserver 地址 |
-| `neon-compute.pageserver.port` | int | `6400` | Pageserver 端口 |
-| `neon-compute.safekeepers` | list | (见 values.yaml) | Safekeeper 连接信息列表 |
+| 参数                             | 类型   | 默认值                           | 描述                    |
+| -------------------------------- | ------ | -------------------------------- | ----------------------- |
+| `neon-compute.enabled`         | bool   | `true`                         | 启用 Compute            |
+| `neon-compute.replicas`        | int    | `1`                            | 副本数                  |
+| `neon-compute.pgVersion`       | int    | `16`                           | PostgreSQL 主版本号     |
+| `neon-compute.port`            | int    | `55433`                        | Compute 监听端口        |
+| `neon-compute.pageserver.host` | string | `"neon-stack-neon-pageserver"` | Pageserver 地址         |
+| `neon-compute.pageserver.port` | int    | `6400`                         | Pageserver 端口         |
+| `neon-compute.safekeepers`     | list   | (见 values.yaml)                 | Safekeeper 连接信息列表 |
 
 ## 端口
 
-| 组件 | 端口 | 协议 | 用途 |
-|------|:----:|------|------|
+| 组件               |   端口   | 协议 | 用途                                                    |
+| ------------------ | :-------: | ---- | ------------------------------------------------------- |
 | Storage Controller | `50051` | HTTP | REST API（`/v1/tenant`、`/upcall/v1/re-attach` 等） |
-| Storage Broker | `50051` | gRPC | 服务发现与心跳 |
-| Pageserver | `6400` | TCP | PostgreSQL 页面协议 |
-| Pageserver | `9898` | HTTP | 管理 API（`/status`） |
-| Safekeeper | `5454` | TCP | WAL 协议 |
-| Safekeeper | `7676` | HTTP | 管理 API |
-| Dummy CP | `8080` | HTTP | 伪 Control Plane API |
-| Compute | `55433` | TCP | PostgreSQL 客户端协议 |
+| Storage Broker     | `50051` | gRPC | 服务发现与心跳                                          |
+| Pageserver         | `6400` | TCP  | PostgreSQL 页面协议                                     |
+| Pageserver         | `9898` | HTTP | 管理 API（`/status`）                                 |
+| Safekeeper         | `5454` | TCP  | WAL 协议                                                |
+| Safekeeper         | `7676` | HTTP | 管理 API                                                |
+| Dummy CP           | `8080` | HTTP | 伪 Control Plane API                                    |
+| Compute            | `55433` | TCP  | PostgreSQL 客户端协议                                   |
 
 ## 连接数据库
 

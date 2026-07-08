@@ -7,7 +7,7 @@ metadata:
   annotations:
     "helm.sh/hook": post-install
     "helm.sh/hook-weight": "-4"
-    "helm.sh/hook-delete-policy": before-hook-creation
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
   ttlSecondsAfterFinished: 300
   template:
@@ -53,14 +53,14 @@ spec:
               echo "  Storage Controller is ready"
 
               echo "[2/6] Waiting for Pageserver..."
-              until curl -sf "${PS}/status"; do echo "  Pageserver not ready, retrying..."; sleep 2; done
+              until curl -sf "${PS}/v1/status"; do echo "  Pageserver not ready, retrying..."; sleep 2; done
               echo "  Pageserver is ready"
 
               echo "[3/6] Waiting for Safekeepers..."
               i=0
               while [ "$i" -lt "$SK_REPLICAS" ]; do
                 SK_HOST="${SK_POD_PREFIX}-${i}.${SK_HEADLESS}.${NAMESPACE}.svc.cluster.local"
-                SK_URL="http://${SK_HOST}:${SK_HTTP_PORT}/status"
+                SK_URL="http://${SK_HOST}:${SK_HTTP_PORT}/v1/status"
                 until curl -sf "${SK_URL}"; do echo "  Safekeeper ${i} not ready, retrying..."; sleep 2; done
                 echo "  Safekeeper ${i} is ready"
                 i=$((i + 1))

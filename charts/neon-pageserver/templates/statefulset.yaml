@@ -51,8 +51,8 @@ spec:
                 # metadata.json — 节点元数据，用于 storage controller 注册
                 cat > "$METADATA_FILE" << EOF
               {
-                "postgres_host": "${HEADLESS_DNS}",
-                "postgres_port": 6400,
+                "host": "${HEADLESS_DNS}",
+                "port": 6400,
                 "http_host": "${HEADLESS_DNS}",
                 "http_port": 9898,
                 "grpc_host": "${HEADLESS_DNS}",
@@ -143,7 +143,7 @@ spec:
               protocol: TCP
           startupProbe:
             httpGet:
-              path: /status
+              path: /v1/status
               port: http
             initialDelaySeconds: 10
             timeoutSeconds: 5
@@ -151,13 +151,13 @@ spec:
             failureThreshold: 30
           livenessProbe:
             httpGet:
-              path: /status
+              path: /v1/status
               port: http
             periodSeconds: 15
             timeoutSeconds: 10
           readinessProbe:
             httpGet:
-              path: /status
+              path: /v1/status
               port: http
             periodSeconds: 15
             timeoutSeconds: 10
