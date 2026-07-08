@@ -21,11 +21,11 @@ Neon Pageserver — 存储计算分离架构中的页面存储层，负责从远
 
 **前置依赖**
 
-| 组件 | 用途 |
-|------|------|
-| Storage Broker | 服务发现，pageserver 启动时向其注册 |
-| Storage Controller | 节点管理 API，自动注册节点元数据 |
-| S3 / MinIO | 远程持久化存储层 |
+| 组件               | 用途                                |
+| ------------------ | ----------------------------------- |
+| Storage Broker     | 服务发现，pageserver 启动时向其注册 |
+| Storage Controller | 节点管理 API，自动注册节点元数据    |
+| S3 / MinIO         | 远程持久化存储层                    |
 
 ## 架构
 
@@ -69,7 +69,7 @@ Neon Pageserver — 存储计算分离架构中的页面存储层，负责从远
 
 ## 源代码
 
-* <https://github.com/chirpyli/helm-charts>
+* [https://github.com/chirpyli/helm-charts](https://github.com/chirpyli/helm-charts)
 
 ## 环境要求
 
@@ -106,106 +106,106 @@ $ helm install neon-pageserver . -f values.yaml
 
 ### 核心配置
 
-| 参数 | 类型 | 默认值 | 描述 |
-|-----|------|---------|-------------|
-| baseId | int | `1` | Pageserver 节点 ID 基数（多副本时用于分配唯一 ID） |
-| replicas | int | `1` | 副本数（MVP 阶段为 1） |
+| 参数     | 类型 | 默认值 | 描述                                               |
+| -------- | ---- | ------ | -------------------------------------------------- |
+| baseId   | int  | `1`  | Pageserver 节点 ID 基数（多副本时用于分配唯一 ID） |
+| replicas | int  | `1`  | 副本数（MVP 阶段为 1）                             |
 
 ### 镜像
 
-| 参数 | 类型 | 默认值 | 描述 |
-|-----|------|---------|-------------|
-| image.pullPolicy | string | `"Always"` | 镜像拉取策略 |
-| image.repository | string | `"neondatabase/neon"` | Neondatabase 镜像仓库 |
-| image.tag | string | `"latest"` | 覆盖镜像标签 |
-| imagePullSecrets | list | `[]` | 指定 docker-registry 的 Secret 名称数组 |
+| 参数             | 类型   | 默认值                  | 描述                                    |
+| ---------------- | ------ | ----------------------- | --------------------------------------- |
+| image.pullPolicy | string | `"Always"`            | 镜像拉取策略                            |
+| image.repository | string | `"neondatabase/neon"` | Neondatabase 镜像仓库                   |
+| image.tag        | string | `"latest"`            | 覆盖镜像标签                            |
+| imagePullSecrets | list   | `[]`                  | 指定 docker-registry 的 Secret 名称数组 |
 
 ### 服务配置
 
-| 参数 | 类型 | 默认值 | 描述 |
-|-----|------|---------|-------------|
-| settings.brokerEndpoint | string | `"http://neon-storage-broker:50051"` | Storage Broker 地址 |
-| settings.controlPlaneApi | string | `"http://neon-storage-controller:50051"` | Storage Controller API 地址 |
-| settings.httpAuth | string | `"Trust"` | HTTP 认证模式（Trust 表示无需 JWT） |
-| settings.listenHttpAddr | string | `"0.0.0.0:9898"` | HTTP API 监听地址 |
-| settings.listenPgAddr | string | `"0.0.0.0:6400"` | PostgreSQL 协议监听地址 |
-| settings.pgDistribDir | string | `"/usr/local/"` | PostgreSQL 发行版目录 |
-| settings.virtualFileIoMode | string | `"buffered"` | 虚拟文件 IO 模式 |
+| 参数                       | 类型   | 默认值                                     | 描述                                |
+| -------------------------- | ------ | ------------------------------------------ | ----------------------------------- |
+| settings.brokerEndpoint    | string | `"http://neon-storage-broker:50051"`     | Storage Broker 地址                 |
+| settings.controlPlaneApi   | string | `"http://neon-storage-controller:50051"` | Storage Controller API 地址         |
+| settings.httpAuth          | string | `"Trust"`                                | HTTP 认证模式（Trust 表示无需 JWT） |
+| settings.listenHttpAddr    | string | `"0.0.0.0:9898"`                         | HTTP API 监听地址                   |
+| settings.listenPgAddr      | string | `"0.0.0.0:6400"`                         | PostgreSQL 协议监听地址             |
+| settings.pgDistribDir      | string | `"/usr/local/"`                          | PostgreSQL 发行版目录               |
+| settings.virtualFileIoMode | string | `"buffered"`                             | 虚拟文件 IO 模式                    |
 
 ### 远程存储
 
-| 参数 | 类型 | 默认值 | 描述 |
-|-----|------|---------|-------------|
-| remoteStorage.prefixInBucket | string | `"/pageserver"` | 远程存储路径前缀 |
+| 参数                         | 类型   | 默认值                   | 描述                   |
+| ---------------------------- | ------ | ------------------------ | ---------------------- |
+| remoteStorage.prefixInBucket | string | `"/pageserver"`        | 远程存储路径前缀       |
 | s3Credentials.existingSecret | string | `"bucket-credentials"` | 引用的已有 Secret 名称 |
 
 ### 本地盘驱逐
 
-| 参数 | 类型 | 默认值 | 描述 |
-|-----|------|---------|-------------|
-| diskUsageEviction.enabled | bool | `true` | 启用本地磁盘使用驱逐 |
-| diskUsageEviction.maxUsagePct | int | `80` | 磁盘使用百分比上限 |
-| diskUsageEviction.minAvailBytes | int | `0` | 最小可用字节数 |
+| 参数                            | 类型 | 默认值   | 描述                 |
+| ------------------------------- | ---- | -------- | -------------------- |
+| diskUsageEviction.enabled       | bool | `true` | 启用本地磁盘使用驱逐 |
+| diskUsageEviction.maxUsagePct   | int  | `80`   | 磁盘使用百分比上限   |
+| diskUsageEviction.minAvailBytes | int  | `0`    | 最小可用字节数       |
 
 ### 持久化存储
 
-| 参数 | 类型 | 默认值 | 描述 |
-|-----|------|---------|-------------|
-| persistence.enabled | bool | `true` | 启用持久化存储 |
-| persistence.size | string | `"100Gi"` | 持久卷大小 |
+| 参数                | 类型   | 默认值      | 描述           |
+| ------------------- | ------ | ----------- | -------------- |
+| persistence.enabled | bool   | `true`    | 启用持久化存储 |
+| persistence.size    | string | `"100Gi"` | 持久卷大小     |
 
 ### 网络
 
-| 参数 | 类型 | 默认值 | 描述 |
-|-----|------|---------|-------------|
-| service.headless.name | string | `"neon-pageserver-headless"` | Headless Service 名称 |
-| service.clusterIP.enabled | bool | `true` | 启用 ClusterIP Service |
-| service.clusterIP.name | string | `"neon-pageserver"` | ClusterIP Service 名称 |
+| 参数                      | 类型   | 默认值                         | 描述                   |
+| ------------------------- | ------ | ------------------------------ | ---------------------- |
+| service.headless.name     | string | `"neon-pageserver-headless"` | Headless Service 名称  |
+| service.clusterIP.enabled | bool   | `true`                       | 启用 ClusterIP Service |
+| service.clusterIP.name    | string | `"neon-pageserver"`          | ClusterIP Service 名称 |
 
 ### 其他
 
-| 参数 | 类型 | 默认值 | 描述 |
-|-----|------|---------|-------------|
-| affinity | object | `{}` | Pod 亲和性调度配置 |
-| extraManifests | list | `[]` | 随 Chart 一同创建的额外 Kubernetes 资源清单 |
-| fullnameOverride | string | `""` | 完全覆盖 neon-pageserver.fullname 模板的字符串 |
-| metrics.enabled | bool | `false` | 启用 Prometheus 指标自动发现 |
-| metrics.serviceMonitor.enabled | bool | `false` | 创建 ServiceMonitor 资源 |
-| metrics.serviceMonitor.interval | string | `"10s"` | Prometheus 抓取间隔 |
-| metrics.serviceMonitor.namespace | string | `""` | 创建 ServiceMonitor 的命名空间 |
-| metrics.serviceMonitor.scrapeTimeout | string | `"10s"` | Prometheus 抓取超时时间 |
-| metrics.serviceMonitor.selector | object | `{}` | 附加标签（供 Prometheus operator 使用） |
-| nameOverride | string | `""` | 部分覆盖 neon-pageserver.fullname 模板的字符串 |
-| nodeSelector | object | `{}` | Pod 节点选择器标签 |
-| podAnnotations | object | `{}` | neon-pageserver Pod 的注解 |
-| podLabels | object | `{}` | neon-pageserver Pod 的附加标签 |
-| podSecurityContext | object | `{}` | neon-pageserver Pod 安全上下文 |
-| priorityClassName | string | `""` | Pod 优先级类 |
-| resources.limits.cpu | string | `"2"` | CPU 上限 |
-| resources.limits.memory | string | `"4Gi"` | 内存上限 |
-| resources.requests.cpu | string | `"1"` | CPU 请求 |
-| resources.requests.memory | string | `"2Gi"` | 内存请求 |
-| securityContext | object | `{}` | neon-pageserver 容器安全上下文 |
-| serviceAccount.annotations | object | `{}` | 添加到 ServiceAccount 的注解 |
-| serviceAccount.create | bool | `true` | 指定是否创建 ServiceAccount |
-| serviceAccount.name | string | `""` | 要使用的 ServiceAccount 名称 |
-| tolerations | list | `[]` | Pod 容忍调度配置 |
+| 参数                                 | 类型   | 默认值    | 描述                                           |
+| ------------------------------------ | ------ | --------- | ---------------------------------------------- |
+| affinity                             | object | `{}`    | Pod 亲和性调度配置                             |
+| extraManifests                       | list   | `[]`    | 随 Chart 一同创建的额外 Kubernetes 资源清单    |
+| fullnameOverride                     | string | `""`    | 完全覆盖 neon-pageserver.fullname 模板的字符串 |
+| metrics.enabled                      | bool   | `false` | 启用 Prometheus 指标自动发现                   |
+| metrics.serviceMonitor.enabled       | bool   | `false` | 创建 ServiceMonitor 资源                       |
+| metrics.serviceMonitor.interval      | string | `"10s"` | Prometheus 抓取间隔                            |
+| metrics.serviceMonitor.namespace     | string | `""`    | 创建 ServiceMonitor 的命名空间                 |
+| metrics.serviceMonitor.scrapeTimeout | string | `"10s"` | Prometheus 抓取超时时间                        |
+| metrics.serviceMonitor.selector      | object | `{}`    | 附加标签（供 Prometheus operator 使用）        |
+| nameOverride                         | string | `""`    | 部分覆盖 neon-pageserver.fullname 模板的字符串 |
+| nodeSelector                         | object | `{}`    | Pod 节点选择器标签                             |
+| podAnnotations                       | object | `{}`    | neon-pageserver Pod 的注解                     |
+| podLabels                            | object | `{}`    | neon-pageserver Pod 的附加标签                 |
+| podSecurityContext                   | object | `{}`    | neon-pageserver Pod 安全上下文                 |
+| priorityClassName                    | string | `""`    | Pod 优先级类                                   |
+| resources.limits.cpu                 | string | `"2"`   | CPU 上限                                       |
+| resources.limits.memory              | string | `"4Gi"` | 内存上限                                       |
+| resources.requests.cpu               | string | `"1"`   | CPU 请求                                       |
+| resources.requests.memory            | string | `"2Gi"` | 内存请求                                       |
+| securityContext                      | object | `{}`    | neon-pageserver 容器安全上下文                 |
+| serviceAccount.annotations           | object | `{}`    | 添加到 ServiceAccount 的注解                   |
+| serviceAccount.create                | bool   | `true`  | 指定是否创建 ServiceAccount                    |
+| serviceAccount.name                  | string | `""`    | 要使用的 ServiceAccount 名称                   |
+| tolerations                          | list   | `[]`    | Pod 容忍调度配置                               |
 
 ## 端口
 
-| 端口 | 协议 | 用途 | Service |
-|------|------|------|---------|
-| `6400` | TCP | PostgreSQL 页面协议 | Headless + ClusterIP |
-| `9898` | TCP | HTTP 管理 API (`/status`) | Headless + ClusterIP |
-| `50051` | TCP | gRPC 内部 RPC | Headless |
+| 端口      | 协议 | 用途                        | Service              |
+| --------- | ---- | --------------------------- | -------------------- |
+| `6400`  | TCP  | PostgreSQL 页面协议         | Headless + ClusterIP |
+| `9898`  | TCP  | HTTP 管理 API (`/status`) | Headless + ClusterIP |
+| `50051` | TCP  | gRPC 内部 RPC               | Headless             |
 
 ## 健康检查
 
-| 探针 | 方式 | 路径 | 配置 |
-|------|------|------|------|
-| startupProbe | `httpGet` | `/status` | 最长等待 5 分钟（30 × 10s） |
-| livenessProbe | `httpGet` | `/status` | 每 15s 检查，超时 10s |
-| readinessProbe | `httpGet` | `/status` | 每 15s 检查，超时 10s |
+| 探针           | 方式        | 路径        | 配置                         |
+| -------------- | ----------- | ----------- | ---------------------------- |
+| startupProbe   | `httpGet` | `/status` | 最长等待 5 分钟（30 × 10s） |
+| livenessProbe  | `httpGet` | `/status` | 每 15s 检查，超时 10s        |
+| readinessProbe | `httpGet` | `/status` | 每 15s 检查，超时 10s        |
 
 ## 存储架构
 
@@ -253,5 +253,6 @@ $ kubectl run -it --rm debug --image=curlimages/curl -- \
 $ helm upgrade neon-pageserver ./charts/neon-pageserver --set replicas=3
 ```
 
-----------------------------------------------
+---
+
 由 Chart 元数据通过 [helm-docs](https://github.com/norwoodj/helm-docs) 自动生成

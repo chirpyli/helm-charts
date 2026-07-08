@@ -34,6 +34,10 @@ dependencies:
     version: "0.1.0"
     repository: "file://../neon-init-job"
     condition: neon-init-job.enabled
+  - name: neon-storage-scrubber
+    version: ">=1.4.0"
+    repository: "https://neondatabase.github.io/helm-charts"
+    condition: neon-storage-scrubber.enabled
   - name: neon-compute
     version: "0.1.0"
     repository: "file://../neon-compute"

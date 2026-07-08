@@ -33,7 +33,7 @@ spec:
       {{- if .Values.priorityClassName }}
       priorityClassName: {{ .Values.priorityClassName | quote }}
       {{- end }}
-      initContainers:
+      initContainers:     # 初始化容器
         - name: init-metadata
           image: "{{ .Values.initContainer.repository }}:{{ .Values.initContainer.tag }}"
           imagePullPolicy: {{ .Values.initContainer.pullPolicy }}
@@ -41,13 +41,14 @@ spec:
             - sh
             - -c
             - |
-              # 初始化 metadata.json（仅在首次创建时写入）
+              # 初始化 metadata.json 和 identity.toml（仅在首次创建时写入）
               METADATA_FILE="/data/.neon/metadata.json"
               if [ ! -f "$METADATA_FILE" ]; then
                 mkdir -p /data/.neon
 
                 HEADLESS_DNS="${POD_NAME}.{{ include "neon-pageserver.headlessServiceName" . }}.${POD_NAMESPACE}.svc.cluster.local"
 
+                # metadata.json — 节点元数据，用于 storage controller 注册
                 cat > "$METADATA_FILE" << EOF
               {
                 "postgres_host": "${HEADLESS_DNS}",
@@ -61,8 +62,22 @@ spec:
               }
               EOF
 
-                echo "metadata.json created successfully."
+                # identity.toml — pageserver 节点 ID，启动时必需
+                # baseId + pod 序号 = 节点唯一 ID
+                ORDINAL="${POD_NAME##*-}"
+                NODE_ID=$(({{ .Values.baseId }} + ORDINAL))
+                cat > "/data/.neon/identity.toml" << IDEOF
+              id = ${NODE_ID}
+              IDEOF
+
+                # busybox init 容器以 root 运行，neon 主容器以 nonroot 运行，
+                # 需要让主容器也能写入 /data/.neon/ 目录
+                chmod 777 /data/.neon
+
+                echo "metadata.json and identity.toml created successfully (node_id=${NODE_ID})."
               else
+                # 确保权限正确（pod 重启后 PVC 权限可能丢失）
+                chmod 777 /data/.neon
                 echo "metadata.json already exists, skipping initialization."
               fi
           env:
@@ -88,11 +103,23 @@ spec:
             - -c
             - |
               # pageserver 从 workdir 读取 pageserver.toml（不支持 envsubst，需手动替换环境变量）
-              cat /config/pageserver.toml | \
-                sed -e "s|\$(AWS_ENDPOINT_URL)|$AWS_ENDPOINT_URL|g" \
-                    -e "s|\$(BUCKET_NAME)|$BUCKET_NAME|g" \
-                    -e "s|\$(AWS_REGION)|$AWS_REGION|g" \
-                > /data/.neon/pageserver.toml
+              # 使用 awk 进行占位符替换，避免 shell 转义问题
+              # 在主容器启动时确保 /data/.neon 目录可写（uid 1000）
+              mkdir -p /data/.neon
+              chmod 777 /data/.neon 2>/dev/null || true
+
+              # 调试：打印环境变量是否存在
+              echo "DEBUG: AWS_ENDPOINT_URL=${AWS_ENDPOINT_URL}"
+              echo "DEBUG: BUCKET_NAME=${BUCKET_NAME}"
+              echo "DEBUG: AWS_REGION=${AWS_REGION}"
+
+              awk '{
+                gsub(/\$\(AWS_ENDPOINT_URL\)/, ENVIRON["AWS_ENDPOINT_URL"]);
+                gsub(/\$\(BUCKET_NAME\)/, ENVIRON["BUCKET_NAME"]);
+                gsub(/\$\(AWS_REGION\)/, ENVIRON["AWS_REGION"]);
+                print;
+              }' /config/pageserver.toml > /data/.neon/pageserver.toml
+              echo "=== pageserver.toml ===" && cat /data/.neon/pageserver.toml
               exec pageserver -D /data/.neon
           env:
             - name: RUST_LOG

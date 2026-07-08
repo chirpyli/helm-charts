@@ -57,19 +57,20 @@ securityContext: {}
   # runAsNonRoot: true
   # runAsUser: 1000
 
+
 service:
   # service.annotations -- 添加到 Service 的注解
   annotations: {}
-  type: ClusterIP
+  type: ClusterIP    # 仅集群内可访问
   # service.port -- broker 监听端口
   port: 50051
 
 resources:
   limits:
-    memory: 8Gi
+    memory: 2Gi
   requests:
     cpu: "1"
-    memory: 2Gi
+    memory: 128Mi
 
 # -- Pod 节点选择器标签
 nodeSelector: {}
@@ -85,7 +86,7 @@ priorityClassName: ""
 
 metrics:
   # metrics.enabled -- 启用 Prometheus 指标自动发现
-  enabled: false
+  enabled: false    # 默认关闭Prometheus
   ## Prometheus Operator ServiceMonitor 配置
   ##
   serviceMonitor:
@@ -116,8 +117,9 @@ metrics:
     #   prometheus: neon
 
 
+# 默认关闭，只有在跨集群通信时，即不同k8s集群的pageserver/safekeeper需要访问这个broker才开启
 ingress:
-  enabled: false
+  enabled: false     
   className: ""
   annotations: {}
     # kubernetes.io/ingress.class: nginx
@@ -133,4 +135,5 @@ ingress:
   #      - chart-example.local
   #
 # -- 随 Chart 一同创建的额外 Kubernetes 资源清单
+# 允许用户在部署 Chart 时，附带创建 Chart 本身没有内置的任意 Kubernetes 资源
 extraManifests: []

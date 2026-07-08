@@ -57,7 +57,7 @@ spec:
             - --public-key={{ .Values.settings.publicKey | toJson }}
           {{- end }}
           {{- if .Values.settings.devMode }}
-            - --dev
+            - --dev               # --dev模式
           {{- end }}
           {{- if .Values.settings.controlPlaneUrl }}
             - --control-plane-url

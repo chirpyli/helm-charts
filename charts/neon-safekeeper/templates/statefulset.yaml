@@ -1,5 +1,7 @@
+# safekeeper必须指定id，storage broker地址， 本地盘路径，s3配置（可选）
+# 需要注意，safekeeper启动后，需要通过neon-init-job注册到storage controller
 apiVersion: apps/v1
-kind: StatefulSet
+kind: StatefulSet      # 有状态服务，需要本地盘
 metadata:
   name: {{ include "neon-safekeeper.fullname" . }}
   labels:
@@ -7,7 +9,7 @@ metadata:
 spec:
   serviceName: {{ .Values.service.headless.name }}
   replicas: {{ .Values.replicas }}
-  podManagementPolicy: Parallel
+  podManagementPolicy: Parallel    # 并行启动和终止
   selector:
     matchLabels:
       {{- include "neon-safekeeper.selectorLabels" . | nindent 6 }}
@@ -36,7 +38,7 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command:
+          command:    
             - /bin/sh
             - -c
             - |
@@ -58,7 +60,7 @@ spec:
                   fieldPath: metadata.name
           envFrom:
             - secretRef:
-                name: {{ .Values.s3Credentials.existingSecret }}
+                name: {{ .Values.s3Credentials.existingSecret }}      # 配置S3
           ports:
             - name: pg
               containerPort: 5454
@@ -68,7 +70,7 @@ spec:
               protocol: TCP
           startupProbe:
             httpGet:
-              path: /status
+              path: /v1/status
               port: http
             initialDelaySeconds: 10
             timeoutSeconds: 5
@@ -76,13 +78,13 @@ spec:
             failureThreshold: 30
           livenessProbe:
             httpGet:
-              path: /status
+              path: /v1/status
               port: http
             periodSeconds: 15
             timeoutSeconds: 10
           readinessProbe:
             httpGet:
-              path: /status
+              path: /v1/status
               port: http
             periodSeconds: 15
             timeoutSeconds: 10
@@ -106,13 +108,13 @@ spec:
       {{- with .Values.priorityClassName }}
       priorityClassName: {{ . | quote }}
       {{- end }}
-  volumeClaimTemplates:
+  volumeClaimTemplates:     # 持久化存储，PVC
     - metadata:
         name: data
         labels:
           {{- include "neon-safekeeper.labels" . | nindent 10 }}
       spec:
-        accessModes: [ "ReadWriteOnce" ]
+        accessModes: [ "ReadWriteOnce" ]    # 卷只能被单个节点以读写方式挂载
         {{- if .Values.persistence.enabled }}
         resources:
           requests:

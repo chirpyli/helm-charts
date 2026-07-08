@@ -33,10 +33,9 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
-            - /bin/bash
+            - /bin/sh
             - -c
             - |
-              #!/bin/bash
               set -e
 
               SC="{{ .Values.settings.storageControllerEndpoint }}"
@@ -50,7 +49,7 @@ spec:
               NAMESPACE="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
 
               echo "[1/6] Waiting for Storage Controller..."
-              until curl -sf "${SC}/health"; do echo "  SC not ready, retrying..."; sleep 2; done
+              until curl -sf "${SC}/ready"; do echo "  SC not ready, retrying..."; sleep 2; done
               echo "  Storage Controller is ready"
 
               echo "[2/6] Waiting for Pageserver..."
@@ -58,15 +57,18 @@ spec:
               echo "  Pageserver is ready"
 
               echo "[3/6] Waiting for Safekeepers..."
-              for i in $(seq 0 $((SK_REPLICAS - 1))); do
+              i=0
+              while [ "$i" -lt "$SK_REPLICAS" ]; do
                 SK_HOST="${SK_POD_PREFIX}-${i}.${SK_HEADLESS}.${NAMESPACE}.svc.cluster.local"
                 SK_URL="http://${SK_HOST}:${SK_HTTP_PORT}/status"
                 until curl -sf "${SK_URL}"; do echo "  Safekeeper ${i} not ready, retrying..."; sleep 2; done
                 echo "  Safekeeper ${i} is ready"
+                i=$((i + 1))
               done
 
               echo "[4/6] Registering Safekeepers with Storage Controller..."
-              for i in $(seq 0 $((SK_REPLICAS - 1))); do
+              i=0
+              while [ "$i" -lt "$SK_REPLICAS" ]; do
                 SK_ID=$((SK_BASE_ID + i))
                 SK_HOST="${SK_POD_PREFIX}-${i}.${SK_HEADLESS}.${NAMESPACE}.svc.cluster.local"
                 curl -sf -X POST "${SC}/control/v1/safekeeper/${SK_ID}" \
@@ -82,10 +84,11 @@ spec:
                     \"active\": true
                   }"
                 echo "  Registered safekeeper ${SK_ID} (host: ${SK_HOST})"
+                i=$((i + 1))
               done
 
               echo "[5/6] Creating Tenant..."
-              TENANT_ID=$(printf '%08x%08x%08x%08x' $RANDOM $RANDOM $RANDOM $RANDOM)
+              TENANT_ID=$(cat /proc/sys/kernel/random/uuid | tr -d '-')
               curl -sf -X POST "${SC}/v1/tenant" \
                 -H "Content-Type: application/json" \
                 -d "{
@@ -96,7 +99,7 @@ spec:
               echo "  Created tenant: ${TENANT_ID}"
 
               echo "[6/6] Creating Timeline..."
-              TIMELINE_ID=$(printf '%08x%08x%08x%08x' $RANDOM $RANDOM $RANDOM $RANDOM)
+              TIMELINE_ID=$(cat /proc/sys/kernel/random/uuid | tr -d '-')
               curl -sf -X POST "${SC}/v1/tenant/${TENANT_ID}/timeline" \
                 -H "Content-Type: application/json" \
                 -d "{

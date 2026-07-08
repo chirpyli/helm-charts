@@ -16,13 +16,6 @@ data:
     # PostgreSQL 发行版目录
     pg_distrib_dir = "{{ .Values.settings.pgDistribDir }}"
 
-    # 远程存储（外部 MinIO / S3）
-    [remote_storage]
-    endpoint = "$(AWS_ENDPOINT_URL)"
-    bucket_name = "$(BUCKET_NAME)"
-    bucket_region = "$(AWS_REGION)"
-    prefix_in_bucket = "{{ .Values.remoteStorage.prefixInBucket }}"
-
     # Storage Controller 连接（非 emergency mode）
     control_plane_api = "{{ .Values.settings.controlPlaneApi }}"
 
@@ -32,6 +25,18 @@ data:
     # 认证：默认 Trust（无需 JWT），与 ConfigToml 字段名严格对齐
     http_auth_type = "Trust"
     pg_auth_type = "Trust"
+
+    # ------------------------------------------------------------
+    # 以下 table 段必须在所有顶级键之后，避免 toml_edit + #[serde(flatten)] + #[serde(untagged)]
+    # 组合导致的字段处理顺序 Bug（后续 key 会被跳过）
+    # ------------------------------------------------------------
+
+    # 远程存储（外部 MinIO / S3）
+    [remote_storage]
+    endpoint = "$(AWS_ENDPOINT_URL)"
+    bucket_name = "$(BUCKET_NAME)"
+    bucket_region = "$(AWS_REGION)"
+    prefix_in_bucket = "{{ .Values.remoteStorage.prefixInBucket }}"
 
     # 本地盘驱逐策略
     [disk_usage_based_eviction]

@@ -1,16 +1,16 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: Deployment           # 无状态服务
 metadata:
   name: {{ include "neon-storage-broker.fullname" . }}
   labels:
     {{- include "neon-storage-broker.labels" . | nindent 4 }}
 spec:
   strategy:
-    type: RollingUpdate
+    type: RollingUpdate    # 滚动更新
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
-  replicas: 1
+      maxSurge: 1          # 最大超出期望副本数的 Pod 数量
+      maxUnavailable: 0    # 最大不可用的 Pod 数量
+  replicas: 1         # 部署1个就够了
   # Which pods the Deployment is managing (duplicates template.metadata.labels).
   selector:
     matchLabels:

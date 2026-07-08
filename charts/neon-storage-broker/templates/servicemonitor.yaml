@@ -1,7 +1,7 @@
 {{- if .Values.metrics.enabled }}
 {{- if .Values.metrics.serviceMonitor.enabled }}
 apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
+kind: ServiceMonitor      #  Prometheus Operator 的自定义资源（CRD），告诉 Prometheus 去哪里、抓哪个端口、哪个路径、多频繁地采集指标。
 metadata:
   name: {{ include "neon-storage-broker.fullname" . }}
   labels:

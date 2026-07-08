@@ -34,7 +34,7 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       # initContainer: 等待 pageserver 和 safekeepers 就绪，并创建 LFC 目录
-      initContainers:
+      initContainers:   # 计算节点启动前必须要存储层先就绪，
         - name: wait-deps
           image: busybox
           imagePullPolicy: IfNotPresent
@@ -42,8 +42,16 @@ spec:
             - sh
             - -c
             - |
-              echo "Waiting for pageserver..."
+              echo "Waiting for pageserver(s)..."
+              {{- if gt (int .Values.pageservers.replicas) 1 }}
+              {{- range $i := until (int .Values.pageservers.replicas) }}
+              until nc -z {{ $.Values.pageservers.podNamePrefix }}-{{ $i }}.{{ $.Values.pageservers.headlessService }} {{ $.Values.pageservers.port }}; do sleep 2; done
+              {{- end }}
+              {{- else if .Values.pageserver.host }}
               until nc -z {{ .Values.pageserver.host }} {{ .Values.pageserver.port }}; do sleep 2; done
+              {{- else }}
+              until nc -z {{ .Values.pageservers.podNamePrefix }}-0.{{ .Values.pageservers.headlessService }} {{ .Values.pageservers.port }}; do sleep 2; done
+              {{- end }}
               echo "Waiting for safekeepers..."
               {{- range .Values.safekeepers }}
               until nc -z {{ .host }} {{ .port }}; do sleep 2; done

@@ -1,5 +1,5 @@
 apiVersion: batch/v1
-kind: CronJob
+kind: CronJob     # 定时任务
 metadata:
   name: {{ include "neon-storage-scrubber.fullname" . }}
   labels:
@@ -7,7 +7,7 @@ metadata:
 spec:
   timeZone: {{ .Values.storageScrubber.timeZone }}
   schedule: {{ .Values.storageScrubber.schedule }}
-  failedJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1    # 保留失败 Job 的历史记录数
   concurrencyPolicy: Forbid # Only runs one instance
   jobTemplate:
     metadata:
@@ -53,6 +53,19 @@ spec:
                 {{- end -}}
                 {{- toYaml .Values.storageScrubber.command | nindent 16 }}
               env:
+                {{- if .Values.s3Credentials.existingSecret }}
+                # 从共享 S3 Secret 中映射 key 名（Secret 的 BUCKET_NAME → scrubber 期望的 BUCKET）
+                - name: BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.s3Credentials.existingSecret }}
+                      key: BUCKET_NAME
+                - name: REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.s3Credentials.existingSecret }}
+                      key: AWS_REGION
+                {{- else }}
                 {{- if .Values.storageScrubber.awsBucket }}
                 - name: BUCKET
                   value: {{ .Values.storageScrubber.awsBucket }}
@@ -60,6 +73,7 @@ spec:
                 {{- if .Values.storageScrubber.awsRegion }}
                 - name: REGION
                   value: {{ .Values.storageScrubber.awsRegion }}
+                {{- end }}
                 {{- end }}
                 {{- if .Values.storageScrubber.remoteStorageConfig }}
                 - name: REMOTE_STORAGE_CONFIG
@@ -80,6 +94,10 @@ spec:
                 {{- end }}
                 {{- end }}
               envFrom:
+                {{- if .Values.s3Credentials.existingSecret }}
+                - secretRef:
+                    name: {{ .Values.s3Credentials.existingSecret }}
+                {{- end }}
                 - secretRef:
                     name: {{ include "neon-storage-scrubber.fullname" . }}-env-vars
               resources:

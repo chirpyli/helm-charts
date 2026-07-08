@@ -1,14 +1,14 @@
 apiVersion: policy/v1
-kind: PodDisruptionBudget
+kind: PodDisruptionBudget   # PDB，Pod中断预算，是Kubernetes的一种保护机制，用于在「自愿中断」场景下，保证集群中始终有足够数量的Pod在运行。
 metadata:
   name: {{ include "neon-storage-broker.fullname" . }}
   labels:
     {{- include "neon-storage-broker.labels" . | nindent 4 }}
 spec:
-  # When using RollingUpdate strategy, ensure at least 1 pod is available
-  # This works with the Deployment's RollingUpdate strategy
-  # that sets (maxSurge: 1, maxUnavailable: 0) to ensure new pod is created
-  # and healthy before the old pod is terminated during node drainage.
+  # 使用 RollingUpdate 策略时，确保至少 1 个 Pod 始终可用
+  # 与 Deployment 的 RollingUpdate 策略配合使用
+  # 该策略设置 (maxSurge: 1, maxUnavailable: 0)，确保节点驱逐时
+  # 新 Pod 先创建并健康运行，再终止旧 Pod。
   minAvailable: 1
   selector:
     matchLabels:

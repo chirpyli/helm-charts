@@ -38,6 +38,12 @@ settings:
     - name: PAGESERVER_DISABLE_FILE_LOGGING
       value: "1"
 
+# s3Credentials -- S3 凭证配置
+s3Credentials:
+  # s3Credentials.existingSecret -- 包含 S3 凭证的 Kubernetes Secret 名称。
+  # Secret 应包含：AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL
+  existingSecret: ""
+
 storageScrubber:
   # -- 运行 scrubber 的 AWS 区域
   awsRegion: ""
@@ -87,9 +93,9 @@ resources:
   limits:
     cpu: 200m
     memory: 2Gi
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
 
 # -- Pod 节点选择器标签
 nodeSelector: {}

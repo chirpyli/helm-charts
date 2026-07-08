@@ -20,7 +20,16 @@ devMode: true
 tenantId: ""
 timelineId: ""
 
-# Pageserver 连接
+# Pageserver 连接（支持多副本）
+# 当 replicas > 1 时，通过 headless service DNS 自动生成所有 pageserver pod 的连接信息
+# 生成的 pageserver_connstring 格式：
+#   "host=pod-0.headless-svc port=6400,host=pod-1.headless-svc port=6400,..."
+pageservers:
+  replicas: 1
+  podNamePrefix: "neon-stack-neon-pageserver"
+  headlessService: "neon-stack-neon-pageserver-headless"
+  port: 6400
+# 兼容旧配置：当 pageservers.replicas 为 1 时，优先使用此处的 host
 pageserver:
   host: "neon-pageserver"
   port: 6400

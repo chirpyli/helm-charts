@@ -35,11 +35,15 @@ data:
       },
       "tenant_id": "{{ .Values.tenantId }}",
       "timeline_id": "{{ .Values.timelineId }}",
-      "pageserver_connection_info": {
-        "host": "{{ .Values.pageserver.host }}",
-        "port": {{ .Values.pageserver.port }}
-      },
+      {{- /* pageserver_connstring: 逗号分隔的多 pageserver 连接串，与 libpagestore.c 中的 neon.pageserver_connstring GUC 对应 */}}
+      {{- /* 每个 pageserver 对应一个 shard，格式: host=<pod>.<headless-svc> port=<pg-port> */}}
+      {{- if gt (int .Values.pageservers.replicas) 1 }}
+      "pageserver_connstring": "{{- range $i := until (int .Values.pageservers.replicas) }}{{- if $i }},{{ end }}host={{ $.Values.pageservers.podNamePrefix }}-{{ $i }}.{{ $.Values.pageservers.headlessService }} port={{ $.Values.pageservers.port }}{{- end }}",
+      {{- else if .Values.pageserver.host }}
       "pageserver_connstring": "host={{ .Values.pageserver.host }} port={{ .Values.pageserver.port }}",
+      {{- else }}
+      "pageserver_connstring": "host={{ .Values.pageservers.podNamePrefix }}-0.{{ .Values.pageservers.headlessService }} port={{ .Values.pageservers.port }}",
+      {{- end }}
       "safekeeper_connstrings": [
         {{- range $i, $sk := .Values.safekeepers }}
         {{- if $i}},{{ end }}"host={{ $sk.host }} port={{ $sk.port }}"

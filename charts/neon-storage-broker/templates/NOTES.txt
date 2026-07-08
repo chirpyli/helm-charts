@@ -1,6 +1,14 @@
-Externally service is available at http://{{ index .Values.service.annotations "external-dns.alpha.kubernetes.io/hostname" }}:{{ .Values.service.port }}
-You can also get LoadBalancer URL by running these commands:
-  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
-    You can watch the status of by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "neon-storage-broker.fullname" . }}'
-export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "neon-storage-broker.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
-echo http://$SERVICE_IP:{{ .Values.service.port }}
+Storage Broker 已在集群内部署完成。
+
+集群内访问地址：http://{{ include "neon-storage-broker.fullname" . }}:{{ .Values.service.port }}
+{{- if .Values.ingress.enabled }}
+
+外部访问入口（Ingress 已启用）：
+{{- range .Values.ingress.hosts }}
+  http://{{ .host }}{{ (index .paths 0).path }}
+{{- end }}
+{{- else }}
+
+集群外访问需通过 Ingress，当前默认关闭（ingress.enabled=false）。
+如需从集群外部调试 broker，请在 values.yaml 中启用 ingress 并配置 HTTP/2（gRPC）后端协议。
+{{- end }}

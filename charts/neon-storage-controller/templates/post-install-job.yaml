@@ -6,7 +6,7 @@
   {{- fail (printf "Value for .Values.registerControlPlane.cplane_url is empty") }}
 {{- end }}
 apiVersion: batch/v1
-kind: Job
+kind: Job   # 为Neon生产环境的真实Control Plane设计的。在Neon的SaaS架构中：Control Plane维护全局的pageserver/storage-controller 注册表,每新增一个 region，需要向cplane登记SC的host/port/zone ,登记后cplane才能把region的tenant调度到这个SC上管理
 metadata:
   name: {{ include "neon-storage-controller.fullname" . }}-register-job
   labels:

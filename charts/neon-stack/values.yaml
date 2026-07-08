@@ -70,8 +70,8 @@ neon-storage-controller:
     controlPlaneUrl: "http://neon-stack-neon-dummy-cp:8080"
     # dev 模式下 jwt token 可选
     controlPlaneJwtToken: ""
-    # 数据库连接串（通过 Secret 注入）
-    databaseUrl: ""
+    # 数据库连接串（指向外部 PostgreSQL，与 global.storageController.existingPgUriSecret 对应）
+    databaseUrl: "postgres://storage_controller:storage_controller@192.168.232.128:5432/storage_controller"
     # Safekeeper 数量（dev 模式可 < 3）
     timelineSafekeeperCount: 3
   # 生产安全配置
@@ -95,7 +95,7 @@ neon-pageserver:
     repository: ghcr.io/neondatabase/neon
   settings:
     brokerEndpoint: "http://neon-stack-neon-storage-broker:50051"
-    controlPlaneApi: "http://neon-stack-neon-storage-controller-svc:50051"
+    controlPlaneApi: "http://neon-stack-neon-storage-controller-svc:50051/upcall/v1"
   persistence:
     size: 10Gi
   s3Credentials:
@@ -132,6 +132,27 @@ neon-init-job:
       pgPort: 5454
       httpPort: 7676
 
+# -- Storage Scrubber（S3 存储物理垃圾回收 CronJob）
+# 独立模式：直接扫描 S3 bucket，无需 Control Plane 或 Storage Controller。
+# Region/Bucket 自动从 s3Credentials.existingSecret 中 BUCKET_NAME / AWS_REGION 获取。
+neon-storage-scrubber:
+  enabled: true
+  image:
+    repository: ghcr.io/neondatabase/neon
+  # S3 凭证：复用与 pageserver/safekeeper 相同的 bucket-credentials Secret
+  s3Credentials:
+    existingSecret: "bucket-credentials"
+  storageScrubber:
+    # 调度计划：每天凌晨 3 点运行（避开业务高峰）
+    schedule: "0 3 * * *"
+    timeZone: "Asia/Shanghai"
+    command:
+      - pageserver-physical-gc
+      - --min-age=1week
+  # 强制调度到 worker 节点
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+
 # -- Compute（PostgreSQL 计算节点）
 neon-compute:
   enabled: true
@@ -139,8 +160,14 @@ neon-compute:
   pgVersion: 16
   port: 55433
   devMode: true
-  pageserver:
-    host: "neon-stack-neon-pageserver"
+  # pageservers 配置：根据 neon-pageserver 的 replicas 自动生成所有 pageserver 连接信息
+  # pageserver_connstring 将生成为：
+  #   "host=pod-0.headless-svc port=6400,host=pod-1.headless-svc port=6400,..."
+  pageservers:
+    # -- 与 neon-pageserver.replicas 保持一致
+    replicas: 1
+    podNamePrefix: "neon-stack-neon-pageserver"
+    headlessService: "neon-stack-neon-pageserver-headless"
     port: 6400
   safekeepers:
     - host: "neon-stack-neon-safekeeper-0.neon-stack-neon-safekeeper-headless"
