@@ -54,7 +54,8 @@ settings:
   # settings.otelExporterOtlpEndpoint -- OpenTelemetry Collector URL（转换为 `OTEL_EXPORTER_OTLP_ENDPOINT` 环境变量）
   otelExporterOtlpEndpoint: ""
   # settings.otelExporterDisabled -- 禁用 OpenTelemetry（转换为 `OTEL_SDK_DISABLED` 环境变量）
-  otelExporterDisabled: false
+  # 默认禁用，自建 K8s 环境通常没有 OTLP Collector，避免 BatchSpanProcessor.ExportError 报错
+  otelExporterDisabled: true
   # settings.sentryUrl -- Sentry 用于收集 neon-proxy 错误/panic 事件的 URL（转换为 `SENTRY_DSN` 环境变量）
   sentryUrl: ""
   # settings.sentryEnvironment -- "development" 或 "production"，在 Sentry 中可见用于筛选问题

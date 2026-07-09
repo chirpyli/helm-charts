@@ -67,8 +67,10 @@ spec:
             - /certs/tls.key
             - --tls-cert
             - /certs/tls.crt
-          {{- if or .Values.internalCa .Values.settings }}
           env:
+            # 禁用 OpenTelemetry trace export，避免在没有 OTLP Collector 时报错
+            - name: OTEL_SDK_DISABLED
+              value: "true"
             {{- with .Values.settings.sentryUrl }}
             - name: SENTRY_DSN
               value: {{ . }}
@@ -81,7 +83,6 @@ spec:
             - name: NEON_INTERNAL_CA_FILE
               value: /root_cert/neon_root_ca.crt
             {{- end }}
-          {{- end }}
           volumeMounts:
             - mountPath: "/certs"
               name: certs

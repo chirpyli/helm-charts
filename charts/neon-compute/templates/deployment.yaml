@@ -90,6 +90,9 @@ spec:
           env:
             - name: RUST_LOG
               value: "INFO"
+            # 禁用 OpenTelemetry trace export，避免在没有 OTLP Collector 时报错
+            - name: OTEL_SDK_DISABLED
+              value: "true"
           ports:
             - name: pgsql
               containerPort: {{ .Values.port }}
