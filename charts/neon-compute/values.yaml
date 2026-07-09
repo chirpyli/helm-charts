@@ -34,7 +34,7 @@ pageserver:
   host: "neon-pageserver"
   port: 6400
 
-# Safekeeper 连接（格式: host=<host> port=<port>）
+# Safekeeper 连接（模板生成 host:port 格式，与 walproposer 的 neon.safekeepers GUC 解析器匹配）
 safekeepers:
   - host: "neon-safekeeper-0.neon-safekeeper-headless"
     port: 5454
@@ -42,6 +42,39 @@ safekeepers:
     port: 5454
   - host: "neon-safekeeper-2.neon-safekeeper-headless"
     port: 5454
+
+# PostgreSQL 角色配置（对应 ComputeSpec cluster.roles）
+# 每个角色由 compute_ctl 在 PostgreSQL 启动后自动创建/同步
+#
+# 【重要】cloud_admin 是 Neon 内置系统超级用户，由 pageserver 在 initdb 阶段自动创建，
+# 不应在此外部配置。参考：
+#   - pageserver_api/config.rs: DEFAULT_SUPERUSER = "cloud_admin"
+#   - docs/settings.md: "The default is 'cloud_admin', and the console depends
+#     on that, so if you change it, bad things will happen."
+#
+# encrypted_password 必须是预加密格式：
+#   - SCRAM-SHA-256（推荐）：以 "SCRAM-SHA-256" 开头的完整 verifier 字符串
+#     格式：SCRAM-SHA-256$4096:<base64_salt>$<base64_stored_key>:<base64_server_key>
+#     算法参考 RFC 7677，使用 PBKDF2-HMAC-SHA256（4096 次迭代）
+#   - MD5（兼容）：32 位 hex 哈希（不含 "md5" 前缀），compute_ctl 自动添加前缀
+#     计算公式：md5('<password><username>')
+# SCRAM verifier 可通过以下方式生成：
+#   1. PostgreSQL: SELECT rolpassword FROM pg_authid WHERE rolname='xxx';
+#   2. Python: hashlib.pbkdf2_hmac + hmac.new + base64
+#
+# options 每个条目必须包含 name + value + vartype 三个字段，缺字段会导致
+# compute_ctl GenericOption 反序列化失败（vartype 为 String 非 Optional）。
+# 注意以下属性已由 compute_ctl 自动处理，无需在 options 中重复配置：
+#   - LOGIN: to_pg_options() 硬编码追加 pg_helpers.rs:149
+#   - CREATEROLE CREATEDB BYPASSRLS REPLICATION: CREATE ROLE 模板自带 spec_apply.rs:819
+roles:
+  - name: "postgres"
+    # SCRAM-SHA-256 verifier，密码: postgres
+    encrypted_password: "SCRAM-SHA-256$4096:l9N29id6nncjM9tYxQjzsg==$loPCFj4ufXnEYWwK76GixjmckokVAXOonLIOBBBXlwY=:NDJ8goYskJbiw0GKb9bWPjRGMKVRGdPBhmDEUyQQlts="
+    options:
+      - name: "SUPERUSER"
+        value: null
+        vartype: "bool"
 
 # LFC（Local File Cache）本地盘配置
 lfc:

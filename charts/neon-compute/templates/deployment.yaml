@@ -68,6 +68,10 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # 注意：--pgdata 指向的 /var/db/postgres/compute 必须是普通子目录，
+          # 不能是 volume 挂载点（compute_ctl 的 create_pgdata() 会 remove_dir_all 后 create_dir，
+          # 若 pgdata 是挂载点则 create_dir 会报 "File exists (os error 17)"）。
+          # 因此 emptyDir 挂在父目录 /var/db/postgres，由 compute_ctl 自行管理 compute 子目录。
           command:
             - compute_ctl
             - --pgdata
@@ -130,7 +134,7 @@ spec:
             - name: lfc
               mountPath: {{ .Values.lfc.mountPath }}
             - name: pgdata
-              mountPath: /var/db/postgres/compute
+              mountPath: /var/db/postgres
       volumes:
         - name: config
           configMap:

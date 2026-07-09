@@ -13,12 +13,7 @@ data:
           "cluster_id": "k8s-deploy",
           "name": "default",
           "state": "active",
-          "roles": [{
-            "name": "cloud_admin",
-            "encrypted_password": null,
-            "login": true,
-            "superuser": true
-          }],
+          "roles": {{ .Values.roles | toJson }},
           "databases": [{
             "name": "postgres",
             "owner": "cloud_admin"
@@ -47,7 +42,7 @@ data:
         {{- end }}
         "safekeeper_connstrings": [
           {{- range $i, $sk := .Values.safekeepers }}
-          {{- if $i}},{{ end }}"host={{ $sk.host }} port={{ $sk.port }}"
+          {{- if $i}},{{ end }}"{{ $sk.host }}:{{ $sk.port }}"
           {{- end }}
         ],
         "mode": "Primary",

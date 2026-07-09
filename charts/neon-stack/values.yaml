@@ -57,12 +57,17 @@ neon-storage-broker:
   enabled: true
   image:
     repository: ghcr.io/neondatabase/neon
+    tag: "latest"
+    # 本地已导入 containerd（k8s.io namespace）的镜像，禁止每次远程拉取
+    pullPolicy: IfNotPresent
 
 # -- Storage Controller（已有 Chart，需要 dev 模式）
 neon-storage-controller:
   enabled: true
   image:
     repository: ghcr.io/neondatabase/neon
+    tag: "latest"
+    pullPolicy: IfNotPresent
   settings:
     # 启用 dev 模式：跳过 JWT 等生产安全检查
     devMode: true
@@ -85,6 +90,7 @@ neon-dummy-cp:
   image:
     repository: docker.m.daocloud.io/library/python
     tag: "3.11-slim"
+    pullPolicy: IfNotPresent
 
 # -- Pageserver（正常模式，非 emergency）
 neon-pageserver:
@@ -93,6 +99,8 @@ neon-pageserver:
   baseId: 1
   image:
     repository: ghcr.io/neondatabase/neon
+    tag: "latest"
+    pullPolicy: IfNotPresent
   settings:
     brokerEndpoint: "http://neon-stack-neon-storage-broker:50051"
     controlPlaneApi: "http://neon-stack-neon-storage-controller-svc:50051/upcall/v1"
@@ -111,6 +119,8 @@ neon-safekeeper:
   baseId: 1
   image:
     repository: ghcr.io/neondatabase/neon
+    tag: "latest"
+    pullPolicy: IfNotPresent
   settings:
     brokerEndpoint: "http://neon-stack-neon-storage-broker:50051"
   persistence:
@@ -146,6 +156,8 @@ neon-storage-scrubber:
   enabled: true
   image:
     repository: ghcr.io/neondatabase/neon
+    tag: "latest"
+    pullPolicy: IfNotPresent
   # S3 凭证：复用与 pageserver/safekeeper 相同的 bucket-credentials Secret
   s3Credentials:
     existingSecret: "bucket-credentials"
@@ -167,6 +179,11 @@ neon-compute:
   pgVersion: 16
   port: 55433
   devMode: true
+  # 计算节点镜像：避免每次从远程拉取（本地已导入 containerd k8s.io namespace）
+  image:
+    repository: ghcr.io/neondatabase/compute-node-v16
+    tag: "latest"
+    pullPolicy: IfNotPresent
   # -- 租户 ID（32 位 hex，不含连字符的 UUID）。必须与 neon-init-job.settings.tenantId 保持一致。
   tenantId: "dc38beec6b7645139518229fcf4c0235"
   # -- 时序线 ID（32 位 hex，不含连字符的 UUID）。必须与 neon-init-job.settings.timelineId 保持一致。
@@ -184,6 +201,26 @@ neon-compute:
     podNamePrefix: "neon-stack-neon-pageserver"
     headlessService: "neon-stack-neon-pageserver-headless"
     port: 6400
+  # PostgreSQL 角色配置（覆盖 neon-compute 子 Chart 的默认值）
+  # encrypted_password 为 SCRAM-SHA-256 verifier 格式
+  # 格式：SCRAM-SHA-256$4096:<base64_salt>$<base64_stored_key>:<base64_server_key>
+  # 注意：cloud_admin 是 Neon 内置系统超级用户，由 pageserver initdb 自动创建，不应配置在此
+  # options 每个条目必须包含 name + value + vartype，缺字段会导致反序列化失败
+  # LOGIN 已由 to_pg_options() 追加，CREATEROLE CREATEDB 已由 CREATE ROLE 模板自带
+  # CREATE ROLE "postgres"
+  # INHERIT CREATEROLE CREATEDB BYPASSRLS REPLICATION  -- 模板自带
+  # IN ROLE neon_superuser                              -- privileged_role
+  # SUPERUSER                                           -- options 配置
+  # LOGIN                                               -- to_pg_options() 自动追加
+  # PASSWORD 'SCRAM-SHA-256$4096:...'                  -- encrypted_password
+  roles:
+    - name: "postgres"
+      # SCRAM-SHA-256 verifier，密码: postgres
+      encrypted_password: "SCRAM-SHA-256$4096:l9N29id6nncjM9tYxQjzsg==$loPCFj4ufXnEYWwK76GixjmckokVAXOonLIOBBBXlwY=:NDJ8goYskJbiw0GKb9bWPjRGMKVRGdPBhmDEUyQQlts="
+      options:
+        - name: "SUPERUSER"
+          value: null
+          vartype: "bool"
   safekeepers:
     - host: "neon-stack-neon-safekeeper-0.neon-stack-neon-safekeeper-headless"
       port: 5454

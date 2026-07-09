@@ -43,10 +43,15 @@ spec:
             - -c
             - |
               SAFEKEEPER_ID=$(({{ .Values.baseId }} + $(echo ${POD_NAME##*-})))
+              # 抽取 PG 端口（listenPg 格式为 "0.0.0.0:5454"）
+              SAFEKEEPER_PG_PORT=$(echo {{ .Values.settings.listenPg }} | cut -d: -f2)
+              # advertise-pg 使用 Pod 的 Headless DNS 名称，使 Pageserver 能正确连接到 Safekeeper
+              # 不使用 0.0.0.0（那是监听地址），否则 Pageserver 会尝试连接 localhost
               # Safekeeper 期望 TOML inline table 格式（与 Neon 测试框架 to_toml_inline_table 一致）
               exec safekeeper \
                 --listen-pg={{ .Values.settings.listenPg }} \
                 --listen-http={{ .Values.settings.listenHttp }} \
+                --advertise-pg=${POD_NAME}.${HEADLESS_SVC}:${SAFEKEEPER_PG_PORT} \
                 --id=${SAFEKEEPER_ID} \
                 --broker-endpoint={{ .Values.settings.brokerEndpoint }} \
                 -D /data \
@@ -58,6 +63,9 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # Headless Service DNS 名（不含命名空间后缀），用于 --advertise-pg
+            - name: HEADLESS_SVC
+              value: {{ default (printf "%s-headless" (include "neon-safekeeper.fullname" .)) .Values.service.headless.name | quote }}
           envFrom:
             - secretRef:
                 name: {{ .Values.s3Credentials.existingSecret }}      # 配置S3
