@@ -1,0 +1,42 @@
+# Headless 服务：StatefulSet 稳定 DNS
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "neon-safekeeper.headlessServiceName" . }}
+  labels:
+    {{- include "neon-safekeeper.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: {{ .Values.service.pgPort }}
+      targetPort: pg
+      name: pg
+      protocol: TCP
+    - port: {{ .Values.service.httpPort }}
+      targetPort: http
+      name: http
+      protocol: TCP
+  selector:
+    {{- include "neon-safekeeper.selectorLabels" . | nindent 4 }}
+---
+# ClusterIP 服务：SC / compute / pageserver 通过此地址连接 safekeeper
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "neon-safekeeper.serviceName" . }}
+  labels:
+    {{- include "neon-safekeeper.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.pgPort }}
+      targetPort: pg
+      name: pg
+      protocol: TCP
+    - port: {{ .Values.service.httpPort }}
+      targetPort: http
+      name: http
+      protocol: TCP
+  selector:
+    {{- include "neon-safekeeper.selectorLabels" . | nindent 4 }}

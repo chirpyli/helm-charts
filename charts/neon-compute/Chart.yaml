@@ -1,0 +1,10 @@
+apiVersion: v2
+name: neon-compute
+description: Neon 示例 compute 节点（静态 PostgreSQL，演示 endpoint 接入）
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">= 1.18.0-0"
+home: https://neon.tech
+sources:
+  - https://github.com/neondatabase/neon

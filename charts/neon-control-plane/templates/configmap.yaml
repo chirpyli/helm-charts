@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "neon-control-plane.fullname" . }}-config
+  labels:
+    {{- include "neon-control-plane.labels" . | nindent 4 }}
+data:
+  # 控制面运行配置（Go 服务以 --config 读取此 JSON）
+  config.json: |
+    {
+      "storage_controller_url": "{{ .Values.settings.storageControllerUrl }}",
+      "listen_port": {{ .Values.settings.listenPort }},
+      "default_tenant_id": "{{ .Values.settings.defaultTenantId }}",
+      "pageservers": [
+        {{- range $i, $ps := .Values.settings.pageservers }}
+        {{- if $i }},{{ end }}
+        { "id": {{ $ps.id }}, "host": "{{ $ps.host }}", "pg_port": {{ $ps.pgPort }}, "http_port": {{ $ps.httpPort }} }
+        {{- end }}
+      ],
+      "safekeepers": [
+        {{- range $i, $sk := .Values.settings.safekeepers }}
+        {{- if $i }},{{ end }}
+        { "id": {{ $sk.id }}, "host": "{{ $sk.host }}", "pg_port": {{ $sk.pgPort }}, "http_port": {{ $sk.httpPort }} }
+        {{- end }}
+      ],
+      "compute_image": "{{ .Values.settings.computeImage }}",
+      "enable_k8s_compute": {{ .Values.settings.enableK8sCompute }},
+      "domain": "{{ .Values.settings.domain }}"
+    }

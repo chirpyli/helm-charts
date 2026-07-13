@@ -1,0 +1,21 @@
+dependencies:
+- name: neon-storage-broker
+  repository: file://../neon-storage-broker
+  version: 1.4.0
+- name: neon-storage-controller
+  repository: file://../neon-storage-controller
+  version: 1.19.0
+- name: neon-pageserver
+  repository: file://../neon-pageserver
+  version: 0.1.0
+- name: neon-safekeeper
+  repository: file://../neon-safekeeper
+  version: 0.1.0
+- name: neon-control-plane
+  repository: file://../neon-control-plane
+  version: 0.1.0
+- name: neon-compute
+  repository: file://../neon-compute
+  version: 0.1.0
+digest: sha256:21c1440a956d96ab5cdaba993d68d9be89bad19f51e90c92b4aeb69e2a88752a
+generated: "2026-07-11T09:36:23.584024443+08:00"

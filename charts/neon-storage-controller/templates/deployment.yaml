@@ -38,6 +38,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "neon-storage-controller.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -53,7 +54,14 @@ spec:
             # In the container, use the same port as service.
             */}}
             - 0.0.0.0:{{ .Values.service.port }}
-            - --public-key={{ .Values.settings.publicKey | toJson }}
+          {{- /*
+          # 注意：publicKey 不能以内联命令行参数传入。
+          # 若用 toJson 内联多行 PEM，换行会被转义成字面量 "\n"，导致 storage_controller
+          # 的 JwtAuth::from_key 解析失败（InvalidKeyFormat）。
+          # 正确做法：通过 secrets.yaml 将其以 PUBLIC_KEY 环境变量从 Secret 注入，
+          # K8s 注入环境变量时会保留 PEM 的真实换行符，二进制即可正确解析。
+          # 因此此处不再传 --public-key，改由 envFrom 的 PUBLIC_KEY 环境变量提供。
+          */}}
           {{- if .Values.settings.controlPlaneUrl }}
             - --control-plane-url
             - {{ .Values.settings.controlPlaneUrl | quote }}

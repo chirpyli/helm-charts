@@ -1,0 +1,4 @@
+# 离线静态链接产物（src/neon-control-plane，约 9MB）。
+# docker build 以 src/ 为上下文需要它，但 helm 打包（helm package / helm dependency build）
+# 会将其计入 chart 体积，超过 5MB 上限导致打包失败，故在 helm 侧排除。
+src/neon-control-plane

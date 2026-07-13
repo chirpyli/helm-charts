@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "neon-pageserver.fullname" . }}-config
+  labels:
+    {{- include "neon-pageserver.labels" . | nindent 4 }}
+data:
+  # pageserver.toml：所有字段平铺在根级，没有 [broker_endpoint]/[storage]/[http]/[auth] 嵌套 section
+  # （未知字段被静默忽略）；node id 来自 identity.toml 而非命令行。
+  pageserver.toml: |
+    # pg/libpq 端口（compute 连接）
+    listen_pg_addr   = "0.0.0.0:{{ .Values.service.pgPort }}"
+    # HTTP 管理 API（SC 调用 / 探针 /metrics）
+    listen_http_addr = "0.0.0.0:{{ .Values.service.httpPort }}"
+
+    # storage_broker（WAL 流节点发现）
+    broker_endpoint  = "{{ .Values.settings.brokerEndpoint }}"
+
+    # 对象存储后端：内联表，字段名已核对 → bucket_region（非 region）
+    remote_storage = { bucket_name = "{{ .Values.settings.remoteStorage.bucketName }}", bucket_region = "{{ .Values.settings.remoteStorage.bucketRegion }}", endpoint = "{{ .Values.settings.remoteStorage.endpoint }}", prefix_in_bucket = "{{ .Values.settings.remoteStorage.prefixInBucket }}" }
+
+    # storage_controller upcall 基址（运行时强制必填；pageserver 会 .join("re-attach") 拼接路径，故必须带 /upcall/v1 前缀）
+    control_plane_api       = "{{ .Values.settings.storageControllerUrl }}/upcall/v1"
+    # SC→PS 的 PageServerApi JWT（优先取 umbrella global.jwt.pageserverJwtToken，回退 settings.storageControllerApiToken；建议通过 --set 注入，勿提交明文）
+    control_plane_api_token = "{{ .Values.settings.storageControllerApiToken | default (dig "jwt" "generationsApiJwtToken" "" .Values.global) }}"
+
+    # JWT 校验公钥（由各 chart 统一挂载的 Secret 提供，非 TOML 内联）
+    auth_validation_public_key_path = "/etc/neon/jwt/publicKey.pem"
+    http_auth_type = "NeonJWT"
+    pg_auth_type   = "NeonJWT"
+    availability_zone = "{{ .Values.settings.availabilityZone }}"
+
+    # PostgreSQL 二进制（initdb / postgres）所在根目录；pageserver 据此拼出
+    # <pg_distrib_dir>/v<major>/bin 与 <pg_distrib_dir>/v<major>/lib。
+    # 镜像内二进制装在 /usr/local/v{14..17}，故必须显式指向 /usr/local，
+    # 否则会默认到工作目录（/home/postgres/pageserver）下找不到 initdb 而 ENOENT。
+    pg_distrib_dir = "{{ .Values.settings.pgDistribDir }}"

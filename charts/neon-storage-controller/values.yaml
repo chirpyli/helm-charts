@@ -2,6 +2,10 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
+# 全局配置（umbrella chart 的 global.jwt 自动合并到此处；独立部署时留空即可）
+global:
+  jwt: {}
+
 image:
   # -- Neondatabase image repository
   repository: neondatabase/neon
@@ -110,16 +114,23 @@ settings:
 # This will run postinstall job
 registerControlPlane:
   enable: false
-  # region_id: "<region-id>"
+  # -- region_id 标识（如 us-east-1）
+  region_id: ""
+  # -- storage_controller 对外可访问的主机名（job 注册到 control-plane 时用作节点 host）
+  host: ""
+  # -- storage_controller 的 HTTP 端口（默认与 service.port 一致）
+  port: 50051
+  # -- control plane API URL（如 https://control-plane.example.com/storage/api/v1/）
+  cplane_url: ""
+  # -- 调用 control plane API 的 JWT token（仅 job 使用，若为空则回退到 settings.controlPlaneJwtToken）
   controlPlaneJwtToken: ""
-  # cplane_url: "<control-plane-url>"
   resources:
     limits:
       cpu: 100m
-      memory: 128M
+      memory: 128Mi
     requests:
       cpu: 100m
-      memory: 128M
+      memory: 128Mi
 
 serviceAccount:
   # serviceAccount.create - Specifies whether a service account should be created
@@ -152,6 +163,9 @@ securityContext: {}
   # readOnlyRootFilesystem: true
   # runAsNonRoot: true
   # runAsUser: 1000
+
+# -- pod 终止宽限期（秒）
+terminationGracePeriodSeconds: 30
 
 service:
   # service.annotations -- Annotations to add to the service

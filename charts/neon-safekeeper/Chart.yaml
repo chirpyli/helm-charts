@@ -1,0 +1,10 @@
+apiVersion: v2
+name: neon-safekeeper
+description: Neon safekeeper（有状态 WAL 多副本存储节点）
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: "^1.18.x-x"
+home: https://neon.tech
+sources:
+  - https://github.com/neondatabase/neon

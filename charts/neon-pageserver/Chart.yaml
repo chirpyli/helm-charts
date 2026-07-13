@@ -1,0 +1,10 @@
+apiVersion: v2
+name: neon-pageserver
+description: Neon pageserver（有状态存储节点，物化 tenant 层数据）
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: "^1.18.x-x"
+home: https://neon.tech
+sources:
+  - https://github.com/neondatabase/neon

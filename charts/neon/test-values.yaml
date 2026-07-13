@@ -1,0 +1,164 @@
+# ============================================================
+# Neon umbrella 总 values
+# 部署前提（需用户自备，未提供则组件启动后功能受限）：
+#   1) 外部 PostgreSQL（storage-controller 元数据后端）→ 下方 neon-storage-controller.settings.databaseUrl
+#   2) 外部 MinIO / S3 凭证 → 命名空间内名为 bucket-credentials 的 Secret（见 docs/plan.md 顶部示例）
+#   3) Ed25519 密钥对：公钥(publicKey)交给 pageserver/safekeeper 校验，私钥(privateKey)交给 control-plane 签发 token
+#   4) 各 scope 的 JWT：pageserverJwtToken / safekeeperJwtToken / controlPlaneJwtToken / peerJwtToken
+# 生成示例（自签，仅演示）：
+#   openssl genpkey -algorithm ed25519 -out privateKey.pem
+#   openssl pkey -in privateKey.pem -pubout -out publicKey.pem
+#   # JWT 内容可由 control plane 自行签发，这里填任意非空串占位（SC 仅校验签名，不校验签发者）
+# 建议通过 --set 或独立 values 文件注入，勿将密钥提交到仓库。
+# ============================================================
+
+# 共享 JWT 密钥 Secret 名称（umbrella 创建，供 pageserver/safekeeper/control-plane 挂载）
+jwtSecretName: "neon-jwt"
+
+# -- 全局配置（自动注入到各子 chart 的 .Values.global）
+global:
+  region: "local"
+  jwt:
+    # 已有 Secret 名称；若设置则不新建（与 jwtSecretName 取值应一致）
+    existingSecret: ""
+    # 共享 Secret 名称（与顶层 jwtSecretName 一致）
+    secretName: "neon-jwt"
+    # -- Ed25519 公钥（PEM，含 -----BEGIN PUBLIC KEY-----）
+    publicKey: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAql6ijl7TGeh32peb5FHYBWUOd0v1uZyYYoPdjxN4PLI=\n-----END PUBLIC KEY-----\n"
+    # -- Ed25519 私钥（PEM，含 -----BEGIN PRIVATE KEY-----）
+    privateKey: "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIPkmudDRlw6gexqPhRG9YLHGYvH4ZId9tty0vfIsndNS\n-----END PRIVATE KEY-----\n"
+    # -- 各 scope JWT（SC 校验签名用）
+    pageserverJwtToken: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzY29wZSI6InBhZ2VzZXJ2ZXJhcGkifQ.ZiI8Es5eyDbJjQm0RihCqaZI7GwMM8VdXB31EmNgDfnKJ_x7De4IikgxOZ6YWIRDOlDQS-S-fha-_m94nGQWBg"
+    safekeeperJwtToken: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzY29wZSI6InNhZmVrZWVwZXJkYXRhIn0.kdSWATA_vkCTRtrCUFnDySqHiABvKiFs3wMdQKCeDDI3R37hYbD9BWORvgSCnA2e3ZMGt1_rBHdtrqhhmjFGDQ"
+    controlPlaneJwtToken: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzY29wZSI6ImNvbnRyb2xwbGFuZSJ9.wuiws7BnHVYnlsfOERFmJWVh7JoC2flfMg_zNTyxrTyJNxYeZDBPg34xWjr0anwgrRGDKZXcZdYjIGtJu24qBA"
+    peerJwtToken: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzY29wZSI6ImFkbWluIn0.W6Yy-lzciq1v2UQEN-tddDUy4Hke4Yh9JgGPoNJOufc4ecodzO47aem97p4A50znS0SfBQXnv6aJvNatDCMjDA"
+    computeJwtToken: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzY29wZSI6InRlbmFudCIsInRlbmFudF9pZCI6IjNkMWY3NTk1YjQ2ODIzMDMwNGUwYjczY2VjYmNiMDgxIn0.Aq1IyxDvgl6YGISeL8WpVxFyVVvPhw7yLX9X-0U1l7glrMp1Hn7-KVDTxikoAyPRbBNVS2wyUO55EQtoQavVBg"
+    # -- pageserver → SC 的 upcall(re-attach/validate) 需要 generations_api scope
+    generationsApiJwtToken: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJzY29wZSI6ImdlbmVyYXRpb25zX2FwaSJ9.oNAdLYPofFZmFq8yAs84EX5rulZ3UJdQqiMthM4CxaKFXt25X3iflkz42SU2hgoOi8Uk5B5CyVs6h2lELeTiBw"
+
+# ---------------- 子 chart 透传 ----------------
+
+neon-storage-broker:
+  enabled: true
+  # nameOverride 使服务名为 neon-broker-svc（与 pageserver/safekeeper 默认 brokerEndpoint 对齐）
+  nameOverride: "broker-svc"
+  # 测试环境资源调低（生产建议 CPU >= 1 / 内存 >= 2Gi / limits >= 8Gi）
+  resources:
+    limits:
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+neon-storage-controller:
+  enabled: true
+  nameOverride: "storage-controller"
+  # 测试环境资源调低（生产建议 CPU >= 2 / 内存 >= 4Gi）
+  resources:
+    limits:
+      cpu: "2"
+      memory: 2Gi
+    requests:
+      cpu: "1"
+      memory: 512Mi
+  settings:
+    # 外部 PostgreSQL 连接串（必填）
+    databaseUrl: "postgres://storage_controller:storage_controller@192.168.232.128:5432/storage_controller"
+    # 严格模式下必填：指向 control plane 的 notify 端点基址（SC 启动即校验）
+    controlPlaneUrl: "http://neon-control-plane-svc:8080"
+
+neon-pageserver:
+  enabled: true
+  nameOverride: "pageserver"
+  statefulSet:
+    resources:
+      limits:
+        cpu: "500m"
+        memory: 512Mi
+      requests:
+        cpu: "500m"
+        memory: 512Mi
+    storage:
+      size: 5Gi
+  settings:
+    brokerEndpoint: "http://neon-broker-svc:50051"
+    storageControllerUrl: "http://neon-storage-controller-svc:50051"
+    # storageControllerApiToken 由 global.jwt.pageserverJwtToken 提供（无需重复填）
+    availabilityZone: "az1"
+    remoteStorage:
+      bucketName: "neondata"
+      bucketRegion: "us-east-1"
+      endpoint: "http://192.168.232.128:9000"
+      prefixInBucket: "pageserver"
+    statefulSet:
+      replicas: 1
+
+neon-safekeeper:
+  enabled: true
+  nameOverride: "safekeeper"
+  statefulSet:
+    resources:
+      limits:
+        cpu: "200m"
+        memory: 256Mi
+      requests:
+        cpu: "200m"
+        memory: 256Mi
+    storage:
+      size: 2Gi
+  settings:
+    brokerEndpoint: "http://neon-broker-svc:50051"
+    storageControllerUrl: "http://neon-storage-controller-svc:50051"
+    availabilityZone: "az1"
+    statefulSet:
+      replicas: 3
+
+neon-control-plane:
+  enabled: true
+  nameOverride: "control-plane"
+  resources:
+    limits:
+      cpu: "100m"
+      memory: 128Mi
+    requests:
+      cpu: "100m"
+      memory: 128Mi
+  settings:
+    storageControllerUrl: "http://neon-storage-controller-svc:50051"
+    listenPort: 8080
+    defaultTenantId: "3d1f7595b468230304e0b73cecbcb081"
+    # 节点清单使用 StatefulSet 稳定 DNS（与 nameOverride 一致）
+    pageservers:
+      - id: 1000
+        host: "neon-pageserver-0.neon-pageserver-hl-svc"
+        pgPort: 64000
+        httpPort: 9898
+    safekeepers:
+      - id: 2000
+        host: "neon-safekeeper-0.neon-safekeeper-hl-svc"
+        pgPort: 5454
+        httpPort: 7676
+      - id: 2001
+        host: "neon-safekeeper-1.neon-safekeeper-hl-svc"
+        pgPort: 5454
+        httpPort: 7676
+      - id: 2002
+        host: "neon-safekeeper-2.neon-safekeeper-hl-svc"
+        pgPort: 5454
+        httpPort: 7676
+    computeImage: "neondatabase/compute-node-v17:latest"
+    enableK8sCompute: true
+    domain: "neon.local"
+
+neon-compute:
+  enabled: true
+  nameOverride: "compute"
+  resources:
+    limits:
+      cpu: "500m"
+      memory: 512Mi
+    requests:
+      cpu: "500m"
+      memory: 512Mi
+  settings:
+    connstr: "postgresql://cloud_admin@localhost/postgres"

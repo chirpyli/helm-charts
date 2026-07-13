@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "neon-compute.fullname" . }}
+  labels:
+    {{- include "neon-compute.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "neon-compute.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "neon-compute.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "neon-compute.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # tag 为空时回退到 latest，而非误用 chart 版本号（AppVersion 不是镜像 tag）
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default "latest" }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # 静态加载 control plane 生成的 spec（--config / -c），不连接 control plane
+          # /usr/local/bin/compute_ctl 是 compute-node 镜像中的标准路径
+          command:
+            - /usr/local/bin/compute_ctl
+            - -C
+            - {{ .Values.settings.connstr | quote }}
+            - -c
+            - /etc/neon/spec.json
+            - --pgdata
+            - {{ .Values.settings.pgdata | quote }}
+            - --pgbin
+            - {{ .Values.settings.pgbin | quote }}
+            - --external-http-port
+            - {{ .Values.settings.externalHttpPort | quote }}
+          env:
+            - name: RUST_LOG
+              value: "INFO"
+            - name: RUST_BACKTRACE
+              value: "1"
+          ports:
+            - name: pg
+              containerPort: {{ .Values.service.pgPort }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ .Values.service.httpPort }}
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/neon/spec.json
+              subPath: spec.json
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "neon-compute.fullname" . }}-config
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}

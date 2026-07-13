@@ -1,0 +1,35 @@
+apiVersion: v2
+name: neon
+description: Neon 生产级完整部署 umbrella（broker / storage-controller / pageserver / safekeeper / control-plane / compute）
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: "^1.18.x-x"
+home: https://neon.tech
+sources:
+  - https://github.com/neondatabase/neon
+dependencies:
+  - name: neon-storage-broker
+    repository: "file://../neon-storage-broker"
+    version: "*"
+    condition: neon-storage-broker.enabled
+  - name: neon-storage-controller
+    repository: "file://../neon-storage-controller"
+    version: "*"
+    condition: neon-storage-controller.enabled
+  - name: neon-pageserver
+    repository: "file://../neon-pageserver"
+    version: "*"
+    condition: neon-pageserver.enabled
+  - name: neon-safekeeper
+    repository: "file://../neon-safekeeper"
+    version: "*"
+    condition: neon-safekeeper.enabled
+  - name: neon-control-plane
+    repository: "file://../neon-control-plane"
+    version: "*"
+    condition: neon-control-plane.enabled
+  - name: neon-compute
+    repository: "file://../neon-compute"
+    version: "*"
+    condition: neon-compute.enabled

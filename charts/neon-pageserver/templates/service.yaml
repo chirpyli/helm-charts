@@ -1,0 +1,47 @@
+# Headless 服务：为 StatefulSet 提供稳定 DNS（<pod>.<headless-svc>.<ns>.svc.cluster.local）
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "neon-pageserver.headlessServiceName" . }}
+  labels:
+    {{- include "neon-pageserver.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  # StatefulSet 未就绪时也要能被同命名空间内其他 Pod 通过 DNS 发现
+  publishNotReadyAddresses: true
+  ports:
+    - port: {{ .Values.service.pgPort }}
+      targetPort: pg
+      name: pg
+      protocol: TCP
+    - port: {{ .Values.service.httpPort }}
+      targetPort: http
+      name: http
+      protocol: TCP
+    - port: {{ .Values.service.grpcPort }}
+      targetPort: grpc
+      name: grpc
+      protocol: TCP
+  selector:
+    {{- include "neon-pageserver.selectorLabels" . | nindent 4 }}
+---
+# ClusterIP 服务：SC / compute 通过此地址连接 pageserver
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "neon-pageserver.serviceName" . }}
+  labels:
+    {{- include "neon-pageserver.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.pgPort }}
+      targetPort: pg
+      name: pg
+      protocol: TCP
+    - port: {{ .Values.service.httpPort }}
+      targetPort: http
+      name: http
+      protocol: TCP
+  selector:
+    {{- include "neon-pageserver.selectorLabels" . | nindent 4 }}

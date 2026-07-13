@@ -1,0 +1,95 @@
+# Default values for neon-control-plane.
+# 常驻最小控制面服务：对外提供 project/branch/endpoint API，对内 bootstrap + 调度 SC。
+
+# 全局配置（umbrella 化时由父 chart 的 global 覆盖）
+global: {}
+
+image:
+  # -- 控制面镜像（由 charts/neon-control-plane/src 自行构建）
+  repository: neon-control-plane
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+settings:
+  # -- storage_controller 基址（含端口；umbrella 下默认 neon-storage-controller-svc:50051）
+  storageControllerUrl: "http://neon-storage-controller-svc:50051"
+  # -- 控制面自身监听端口（用户 API / proxy 兼容 API / compute spec 同源）
+  listenPort: 8080
+  # -- 共享 JWT Secret 名称（含 privateKey.pem / publicKey.pem，控制面持有私钥用于签发 token）
+  jwtSecretName: "neon-jwt"
+  # -- bootstrap 创建的默认租户 id（与 pageserver 默认 tenant 对齐；可改成任意 32 位 hex）
+  defaultTenantId: "3d1f7595b468230304e0b73cecbcb081"
+  # -- pageserver 节点清单（bootstrap 注册进 SC；host 用 StatefulSet 稳定 DNS）
+  pageservers:
+    - id: 1000
+      host: "neon-pageserver-0.neon-pageserver-hl-svc"
+      pgPort: 64000
+      httpPort: 9898
+  # -- safekeeper 节点清单（bootstrap 注册进 SC 并设为 Active；需 >= 3 个）
+  safekeepers:
+    - id: 2000
+      host: "neon-safekeeper-0.neon-safekeeper-hl-svc"
+      pgPort: 5454
+      httpPort: 7676
+    - id: 2001
+      host: "neon-safekeeper-1.neon-safekeeper-hl-svc"
+      pgPort: 5454
+      httpPort: 7676
+    - id: 2002
+      host: "neon-safekeeper-2.neon-safekeeper-hl-svc"
+      pgPort: 5454
+      httpPort: 7676
+  # -- 动态拉起 compute 使用的镜像（仅在 enableK8sCompute=true 时用到）
+  # compute_ctl 二进制只存在于 compute-node 专用镜像中，不能用 neondatabase/neon（通用镜像不含 compute_ctl）。
+  computeImage: "neondatabase/compute-node-v17:latest"
+  # -- 是否启用 K8s 动态拉起 compute（需要 RBAC：pods/deployments/services）。false 时仅生成 spec，供静态 neon-compute 使用
+  enableK8sCompute: false
+  # -- proxy 兼容接口域名（phase-2 启用 proxy 时使用）
+  domain: "neon.local"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# -- Guaranteed QoS（控制面无状态，资源占用小；测试环境内存可再减半，生产建议 CPU >= 500m / 内存 >= 256Mi）
+resources:
+  limits:
+    cpu: "100m"
+    memory: 128Mi
+  requests:
+    cpu: "100m"
+    memory: 128Mi
+
+# 单副本（plan 要求单写者 + Recreate）；PDB 保证至少 1 个可用
+podDisruptionBudget:
+  minAvailable: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+metrics:
+  enabled: false
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: 10s
+    scrapeTimeout: 10s
+    selector: {}
+
+extraManifests: []

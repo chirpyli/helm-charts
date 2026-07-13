@@ -1,0 +1,202 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "neon-pageserver.fullname" . }}
+  labels:
+    {{- include "neon-pageserver.labels" . | nindent 4 }}
+spec:
+  # 绑定 Headless 服务以获得稳定 DNS
+  serviceName: {{ include "neon-pageserver.headlessServiceName" . }}
+  replicas: {{ .Values.statefulSet.replicas }}
+  selector:
+    matchLabels:
+      {{- include "neon-pageserver.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "neon-pageserver.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "neon-pageserver.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # 生成每 pod 唯一的 identity.toml（node id = nodeIdBase + StatefulSet ordinal）
+      # 同时生成 metadata.json（NodeMetadata），供 pageserver 向 storage controller 注册 node
+      initContainers:
+        - name: init-identity
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              ORD=$(echo "$POD_NAME" | awk -F- '{print $NF}')
+              ID=$(( {{ .Values.statefulSet.nodeIdBase }} + ORD ))
+              # 写入 identity.toml
+              printf 'id = %s\n' "$ID" > /home/postgres/pageserver/identity.toml
+              echo "init-identity: wrote identity.toml with id=$ID"
+              # 构造 StatefulSet pod 的稳定 DNS 地址：
+              # <pod-name>.<headless-service>.<namespace>.svc.cluster.local
+              # SC 通过此 DNS 名称回连 pageserver 的各端口
+              HEADLESS_SVC="{{ include "neon-pageserver.headlessServiceName" . }}"
+              HOST="${POD_NAME}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
+              # 写入 metadata.json，包含 pageserver 监听的各端口地址及可用区
+              # NodeMetadata 结构参见: libs/pageserver_api/src/config.rs
+              cat > /home/postgres/pageserver/metadata.json <<METAEOF
+              {
+                "host": "${HOST}",
+                "port": {{ .Values.service.pgPort }},
+                "http_host": "${HOST}",
+                "http_port": {{ .Values.service.httpPort }},
+                "https_port": {{ .Values.service.httpsPort }},
+                "grpc_host": "${HOST}",
+                "grpc_port": {{ .Values.service.grpcPort }},
+                "availability_zone_id": "{{ .Values.settings.availabilityZone }}"
+              }
+              METAEOF
+              echo "init-identity: wrote metadata.json with host=${HOST}"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: data
+              mountPath: /home/postgres/pageserver
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # pageserver 仅 -D/--workdir + TOML，无 CLI 覆盖参数
+          command:
+            - pageserver
+            - -D
+            - /home/postgres/pageserver
+          env:
+            - name: RUST_LOG
+              value: "INFO"
+            - name: RUST_BACKTRACE
+              value: "1"
+            # pageserver 连接 safekeeper 时使用的 JWT 认证 token (scope: safekeeperdata)
+            # 若未设置，pageserver 不带 token 连接 safekeeper，safekeeper 会因
+            # pg-auth-public-key-path 开启 JWT 验证而拒绝连接 (Protocol error: EOF during auth)
+            - name: NEON_AUTH_TOKEN
+              value: {{ .Values.global.jwt.safekeeperJwtToken | default "" | quote }}
+            # pageserver 据此向 SC 上报本节点可达地址（POST /re-attach）
+            - name: HADRON_NODE_IP_ADDRESS
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            # 外部对象存储凭证（由 bucket-credentials Secret 注入）
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: bucket-credentials
+                  key: AWS_ACCESS_KEY_ID
+                  optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bucket-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+                  optional: true
+            - name: AWS_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: bucket-credentials
+                  key: AWS_ENDPOINT_URL
+                  optional: true
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: bucket-credentials
+                  key: AWS_REGION
+                  optional: true
+            - name: AWS_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: bucket-credentials
+                  key: BUCKET_NAME
+                  optional: true
+            # pageserver 拉起时间线（initdb）与运行 postgres 子进程时，
+            # 这些 PostgreSQL 二进制动态链接 libpq 等库；需将其 lib 目录加入
+            # LD_LIBRARY_PATH，否则 spawn initdb 会因找不到 libpq.so.5 而 ENOENT 失败。
+            - name: LD_LIBRARY_PATH
+              value: {{ .Values.ldLibraryPath | quote }}
+          ports:
+            - name: pg
+              containerPort: {{ .Values.service.pgPort }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ .Values.service.httpPort }}
+              protocol: TCP
+            - name: https
+              containerPort: {{ .Values.service.httpsPort }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.service.grpcPort }}
+              protocol: TCP
+          # pageserver 管理 API 就绪前需用 TCP 探活（路径不确定，统一用 tcpSocket）
+          startupProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 10
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.statefulSet.storage.mountPath }}
+            # 将 ConfigMap 中的 pageserver.toml 以文件形式挂入工作目录
+            - name: config
+              mountPath: /home/postgres/pageserver/pageserver.toml
+              subPath: pageserver.toml
+            # 共享 JWT 公钥（校验 SC / compute 的 token）
+            - name: jwt
+              mountPath: /etc/neon/jwt
+              readOnly: true
+          resources:
+            {{- toYaml .Values.statefulSet.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "neon-pageserver.fullname" . }}-config
+        - name: jwt
+          secret:
+            secretName: {{ .Values.settings.jwtSecretName | default (dig "jwt" "secretName" "" .Values.global) }}
+  # 持久卷模板：Pod 重建后数据不丢失、且与 Pod 绑定
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.statefulSet.storage.storageClassName }}
+        storageClassName: {{ .Values.statefulSet.storage.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.statefulSet.storage.size }}

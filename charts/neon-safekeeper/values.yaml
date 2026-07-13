@@ -1,0 +1,103 @@
+# Default values for neon-safekeeper.
+# 本 chart 部署有状态的 safekeeper 节点（StatefulSet + PVC，副本 >= 3 满足 WAL 多数派）。
+
+# 全局配置（umbrella 化时由父 chart 的 global 覆盖）
+global: {}
+
+image:
+  repository: neondatabase/neon
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+settings:
+  # -- storage_broker 地址（safekeeper↔pageserver 的 WAL 流发现）
+  brokerEndpoint: "http://neon-broker-svc:50051"
+  # -- storage_controller 地址（注册 sidecar 通过此地址向 SC 注册/激活/注销节点）
+  storageControllerUrl: "http://neon-storage-controller-svc:50051"
+  # -- admin scope JWT token（注册 sidecar 通过此 token 调用 SC API，对应 peerJwtToken）
+  adminToken: ""
+  # -- 可用区标识
+  availabilityZone: "az1"
+  # -- 共享 JWT 公钥 Secret 名称（safekeeper 用其校验 compute/pageserver 的 WAL 连接 token）
+  jwtSecretName: "neon-jwt"
+
+# 注册 sidecar：
+# 每个 safekeeper pod 附带一个轻量 sidecar，负责本节点的注册/激活/对账/注销，
+# 使注册与 pod 真实生命周期对齐，支持重启/扩容/缩容自愈。
+sidecar:
+  # -- 是否启用注册 sidecar
+  enabled: true
+  # -- 对账间隔（秒）：周期性重新注册并确认 active，覆盖 SC 重启/记录丢失/被误改
+  reconcileIntervalSeconds: 60
+  securityContext: {}
+  resources:
+    limits:
+      cpu: 50m
+      memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 32Mi
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+# -- StatefulSet 自身的 annotations（如 argo 忽略字段等）
+statefulSetAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+statefulSet:
+  # -- 副本数（奇数，满足 WAL 多数派；严格模式 SC 要求 timeline_safekeeper_count >= 3）
+  replicas: 3
+  # -- pod 终止宽限期（秒），需 > deregister curl --max-time (10s)，留给 sidecar 足够的注销时间
+  terminationGracePeriodSeconds: 30
+  # node id 基址：每个 pod 的 id = nodeIdBase + StatefulSet ordinal
+  nodeIdBase: 2000
+  storage:
+    size: 2Gi
+    storageClassName: ""
+    mountPath: /var/lib/safekeeper
+  # -- Guaranteed QoS：requests == limits（测试环境内存调小；生产建议 CPU >= 2 / 内存 >= 4Gi）
+  resources:
+    limits:
+      cpu: "200m"
+      memory: 256Mi
+    requests:
+      cpu: "200m"
+      memory: 256Mi
+
+service:
+  type: ClusterIP
+  # -- pg WAL 端口
+  pgPort: 5454
+  # -- HTTP 管理端口
+  httpPort: 7676
+
+podDisruptionBudget:
+  # 3 副本下允许 1 个不可用，保持 WAL 多数派
+  minAvailable: 2
+  maxUnavailable: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+metrics:
+  enabled: false
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: 10s
+    scrapeTimeout: 10s
+    selector: {}
+
+extraManifests: []

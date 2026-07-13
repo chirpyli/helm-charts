@@ -1,0 +1,118 @@
+# neon-safekeeper
+
+![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) [![Lint and Test Charts](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml/badge.svg)](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml)
+
+Neon safekeeper（有状态 WAL 多副本存储节点，compute 的 WAL 写入经由 safekeeper 多数派确认后交由 pageserver 物化）。
+
+**Homepage:** https://neon.tech
+
+## Source Code
+
+* <https://github.com/neondatabase/neon>
+
+## 简介
+
+safekeeper 是 Neon 的 WAL 持久化守护组件，负责：
+- 接收 compute 的 WAL 写入并按**多数派**（quorum）跨节点持久化
+- 将 WAL 流广播给 pageserver 进行物化
+- 通过 storage_broker 做节点发现与集群拓扑维护
+- safekeeper 集群必须满足**奇数副本 >= 3**（storage_controller 严格模式要求 `timeline_safekeeper_count >= 3`）
+
+本 chart 以 **StatefulSet + PVC** 方式部署 safekeeper，提供稳定网络标识与本地 WAL 持久化。
+
+## 架构要点
+
+| 资源 | 说明 |
+|------|------|
+| StatefulSet | 有状态编排，每个 Pod 拥有独立 PVC |
+| volumeClaimTemplates | 自动为每个 Pod 创建持久卷 |
+| Headless Service | 稳定的 DNS 地址 `{pod}.{headless-svc}` |
+| ClusterIP Service | 集群内统一访问 safekeeper 端点 |
+| ConfigMap | 渲染 safekeeper 启动配置 |
+| ServiceAccount | 运行时身份标识 |
+| PodDisruptionBudget | minAvailable=2（保持 WAL 多数派） |
+
+## 配置说明
+
+safekeeper **通过 CLI 参数启动**（无 TOML 配置文件），关键参数：
+
+- `-D / --datadir`：数据目录
+- `--id`：safekeeper 节点 ID（写入 `safekeeper.id` 文件）
+- `--listen-pg`：WAL 服务端口（pageserver/compute 连接，默认 5454）
+- `--listen-http`：HTTP 管理端口（SC 心跳 / 探针，默认 7676）
+- `--broker-endpoint`：storage_broker 地址
+- `--pg-auth-public-key-path`：JWT 公钥路径（校验 WAL 连接 token）
+
+> **注意**：safekeeper **没有** `--listen-grpc`（gRPC 已废弃）、**没有** `--control-plane-api`（通过 broker 广播被 SC/pageserver 发现）。
+
+## 安装
+
+```console
+$ helm repo add neondatabase https://neondatabase.github.io/helm-charts
+$ helm install neon-safekeeper neondatabase/neon-safekeeper
+```
+
+通过 umbrella chart 一键部署（推荐）：
+
+```console
+$ helm install neon ./charts/neon
+```
+
+## 前置依赖
+
+- **storage_broker**：节点发现与 WAL 流广播（需先部署 `neon-storage-broker`）
+- **JWT 密钥对**：Ed25519 公钥用于校验 compute/pageserver 的 WAL 连接
+
+## Requirements
+
+Kubernetes: `^1.18.x-x`
+
+## Values
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| affinity | object | `{}` | 亲和性（建议 podAntiAffinity 跨节点分布） |
+| extraManifests | list | `[]` | 额外创建的 K8s 清单 |
+| fullnameOverride | string | `""` | 完全覆盖 fullname 模板 |
+| global | object | `{}` | 全局配置（umbrella 化时由父 chart global 值覆盖） |
+| image.pullPolicy | string | `"IfNotPresent"` | 镜像拉取策略 |
+| image.repository | string | `"neondatabase/neon"` | Neondatabase 镜像仓库 |
+| image.tag | string | `"latest"` | 覆盖镜像 tag |
+| imagePullSecrets | list | `[]` | docker-registry secret 列表 |
+| metrics.enabled | bool | `false` | 启用 Prometheus 指标自动发现 |
+| metrics.serviceMonitor.enabled | bool | `false` | 创建 ServiceMonitor 资源 |
+| metrics.serviceMonitor.interval | string | `"10s"` | Prometheus 抓取间隔 |
+| metrics.serviceMonitor.namespace | string | `""` | ServiceMonitor 命名空间 |
+| metrics.serviceMonitor.scrapeTimeout | string | `"10s"` | 抓取超时 |
+| metrics.serviceMonitor.selector | object | `{}` | 附加标签 |
+| nameOverride | string | `""` | 部分覆盖 fullname 模板 |
+| nodeSelector | object | `{}` | 节点选择 |
+| podAnnotations | object | `{}` | Pod 注解 |
+| podDisruptionBudget.maxUnavailable | int | `1` | 最大不可用副本数 |
+| podDisruptionBudget.minAvailable | int | `2` | 最小可用副本数（3 副本下保持 WAL 多数派） |
+| podLabels | object | `{}` | Pod 额外标签 |
+| podSecurityContext | object | `{}` | Pod 安全上下文 |
+| priorityClassName | string | `""` | Pod 优先级类 |
+| securityContext | object | `{}` | 容器安全上下文 |
+| service.type | string | `"ClusterIP"` | Service 类型 |
+| service.httpPort | int | `7676` | HTTP 管理端口（SC 心跳 / 探针） |
+| service.pgPort | int | `5454` | pg WAL 端口（compute/pageserver 连接） |
+| serviceAccount.annotations | object | `{}` | SA 注解 |
+| serviceAccount.create | bool | `true` | 是否创建 ServiceAccount |
+| serviceAccount.name | string | `""` | 显式指定 SA 名称 |
+| settings.availabilityZone | string | `"az1"` | 可用区标识 |
+| settings.brokerEndpoint | string | `"http://neon-broker-svc:50051"` | storage_broker 地址 |
+| settings.jwtSecretName | string | `"neon-jwt"` | 共享 JWT 公钥 Secret 名称 |
+| statefulSet.nodeIdBase | int | `2000` | node id 基址（每 pod id = base + ordinal） |
+| statefulSet.replicas | int | `3` | 副本数（奇数，满足 WAL 多数派；SC 要求 >= 3） |
+| statefulSet.resources.limits.cpu | string | `"200m"` | CPU 上限（测试环境；生产建议 >= 2） |
+| statefulSet.resources.limits.memory | string | `"256Mi"` | 内存上限（测试环境；生产建议 >= 4Gi） |
+| statefulSet.resources.requests.cpu | string | `"200m"` | CPU 请求（Guaranteed QoS） |
+| statefulSet.resources.requests.memory | string | `"256Mi"` | 内存请求（Guaranteed QoS） |
+| statefulSet.storage.mountPath | string | `"/var/lib/safekeeper"` | 数据卷挂载路径 |
+| statefulSet.storage.size | string | `"2Gi"` | PVC 大小（测试环境；生产建议 >= 20Gi） |
+| statefulSet.storage.storageClassName | string | `""` | StorageClass（留空使用集群默认） |
+| tolerations | list | `[]` | 容忍 |
+
+----------------------------------------------
+Autogenerated from chart metadata using [helm-docs v1.9.1](https://github.com/norwoodj/helm-docs/releases/v1.9.1)

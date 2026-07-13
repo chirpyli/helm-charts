@@ -1,0 +1,254 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "neon-safekeeper.fullname" . }}
+  labels:
+    {{- include "neon-safekeeper.labels" . | nindent 4 }}
+  {{- with .Values.statefulSetAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  serviceName: {{ include "neon-safekeeper.headlessServiceName" . }}
+  replicas: {{ .Values.statefulSet.replicas }}
+  selector:
+    matchLabels:
+      {{- include "neon-safekeeper.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "neon-safekeeper.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "neon-safekeeper.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.statefulSet.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # 生成每 pod 唯一的 node id 文件（id = nodeIdBase + StatefulSet ordinal）
+      initContainers:
+        - name: init-node-id
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              ORD=$(echo "$POD_NAME" | awk -F- '{print $NF}')
+              ID=$(( {{ .Values.statefulSet.nodeIdBase }} + ORD ))
+              mkdir -p /etc/neon
+              printf '%s' "$ID" > /etc/neon/node-id
+              echo "init-node-id: wrote node-id=$ID"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: node-id
+              mountPath: /etc/neon
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # safekeeper 用 clap 参数（无 TOML 配置文件）；--id 来自 init 写入的文件
+          # 注意：safekeeper 没有 --listen-grpc、没有 --control-plane-api（经 broker 发现）
+          command:
+            - sh
+            - -c
+            - |
+              # 构造公告地址：pageserver 通过 broker 发现 safekeeper 时使用此地址连接
+              # 若未设置 --advertise-pg，safekeeper 默认使用 --listen-pg (0.0.0.0)，
+              # 导致 pageserver 无法连接（Connection refused）
+              ADVERTISE_ADDR="$(hostname).{{ include "neon-safekeeper.headlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local"
+              safekeeper -D /var/lib/safekeeper \
+                --id "$(cat /etc/neon/node-id)" \
+                --listen-pg "0.0.0.0:{{ .Values.service.pgPort }}" \
+                --advertise-pg "${ADVERTISE_ADDR}:{{ .Values.service.pgPort }}" \
+                --listen-http "0.0.0.0:{{ .Values.service.httpPort }}" \
+                --broker-endpoint "{{ .Values.settings.brokerEndpoint }}" \
+                --pg-auth-public-key-path /etc/neon/jwt/publicKey.pem \
+                --availability-zone "{{ .Values.settings.availabilityZone }}"
+          env:
+            - name: RUST_LOG
+              value: "INFO"
+            - name: RUST_BACKTRACE
+              value: "1"
+          ports:
+            - name: pg
+              containerPort: {{ .Values.service.pgPort }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ .Values.service.httpPort }}
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 10
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.statefulSet.storage.mountPath }}
+            - name: node-id
+              mountPath: /etc/neon
+            - name: jwt
+              mountPath: /etc/neon/jwt
+              readOnly: true
+          resources:
+            {{- toYaml .Values.statefulSet.resources | nindent 12 }}
+      {{- if .Values.sidecar.enabled }}
+        # 注册 sidecar
+        # 职责：
+        #   1) pod 启动即向 SC 注册本 safekeeper 并设为 active（幂等，可自愈）；
+        #   2) 周期对账（reconcile）重新注册 + 确认 active，覆盖 SC 重启/记录丢失/被误改；
+        #   3) pod 终止时把本节点标记为 decomissioned，阻止 SC 继续向其调度新 timeline。
+        # 说明：SC 没有 delete-safekeeper API，下线唯一方式是 decomissioned；
+        #       decomissioned 不会迁移已有 timeline，完整缩容需运维先迁移 timeline 再删 pod。
+        - name: sk-register
+          securityContext:
+            {{- toYaml .Values.sidecar.securityContext | nindent 14 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            # 通过 downward API 拿到 pod 名与命名空间，拼出 headless DNS 地址
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: RUST_LOG
+              value: "INFO"
+          # 挂载与 safekeeper 主容器共享的 node-id 文件，保证注册的 id 与主容器 --id 完全一致
+          volumeMounts:
+            - name: node-id
+              mountPath: /etc/neon
+              readOnly: true
+          command:
+            - sh
+            - -c
+            - |
+              set -u
+
+              # 读取本 pod 的 safekeeper node id（由 init 容器写入，与主容器 --id 完全一致）
+              NODE_ID="$(cat /etc/neon/node-id 2>/dev/null || true)"
+              if [ -z "${NODE_ID}" ]; then
+                echo "sk-register: FATAL - 无法读取 /etc/neon/node-id，注册 sidecar 退出"
+                sleep 3600
+                exit 1
+              fi
+
+              # SC 地址与 admin scope JWT（peerJwtToken，SC 的 check_permissions 允许 Admin 兜底）
+              SC_URL="{{ .Values.settings.storageControllerUrl }}"
+              ADMIN_TOKEN="{{ .Values.settings.adminToken | default (dig "jwt" "peerJwtToken" "" .Values.global) }}"
+              HEADLESS_SVC="{{ include "neon-safekeeper.headlessServiceName" . }}"
+              # pod 稳定 DNS = <pod-name>.<headless-svc>.<ns>.svc.cluster.local
+              HOST="${POD_NAME}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
+              PG_PORT={{ .Values.service.pgPort }}
+              HTTP_PORT={{ .Values.service.httpPort }}
+              AZ="{{ .Values.settings.availabilityZone }}"
+              REGION="default"
+
+              # 向 SC 注册本 safekeeper 并激活（幂等）
+              register_once() {
+                local nid="$1"
+                # 构造 SafekeeperUpsert 请求体（与 SC 的 SafekeeperUpsert 结构一致）
+                local body
+                body="{\"id\": ${nid}, \"region_id\": \"${REGION}\", \"version\": 1, \"host\": \"${HOST}\", \"port\": ${PG_PORT}, \"http_port\": ${HTTP_PORT}, \"https_port\": null, \"active\": null, \"availability_zone_id\": \"${AZ}\"}"
+
+                # 1) upsert 注册：POST /control/v1/safekeeper/:id（Scope::Infra，Admin 兜底）
+                #    重复注册返回 409 视为成功（记录已存在）
+                local code
+                code=$(curl -s -o /tmp/reg.txt -w "%{http_code}" -X POST \
+                  "${SC_URL}/control/v1/safekeeper/${nid}" \
+                  -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+                  -d "${body}" --connect-timeout 5 --max-time 30) || code="000"
+                echo "sk-register: upsert node ${nid} -> HTTP ${code}"
+
+                # 2) 激活调度策略：只有 active 才会被 SC 调度新 timeline
+                #    POST /control/v1/safekeeper/:id/scheduling_policy（Scope::Admin）
+                local pcode
+                pcode=$(curl -s -o /tmp/pol.txt -w "%{http_code}" -X POST \
+                  "${SC_URL}/control/v1/safekeeper/${nid}/scheduling_policy" \
+                  -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+                  -d '{"scheduling_policy":"active"}' --connect-timeout 5 --max-time 30) || pcode="000"
+                echo "sk-register: set active node ${nid} -> HTTP ${pcode}"
+              }
+
+              # pod 终止时注销：标记为 decomissioned，避免 SC 继续向其调度新 timeline
+              # 注意：decomissioned 不会迁移已有 timeline；完整缩容需运维先迁移 timeline 再删 pod
+              deregister() {
+                local nid="$1"
+                echo "sk-register: pod 终止，将 node ${nid} 标记为 decomissioned"
+                curl -s -o /dev/null -X POST \
+                  "${SC_URL}/control/v1/safekeeper/${nid}/scheduling_policy" \
+                  -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+                  -d '{"scheduling_policy":"decomissioned"}' \
+                  --connect-timeout 5 --max-time 10 || true
+                echo "sk-register: deregister 完成"
+              }
+
+              # 捕获终止信号，先注销再退出（不影响主容器自身的优雅关停）
+              trap 'echo "sk-register: 收到终止信号"; deregister "${NODE_ID}"; exit 0' TERM INT
+
+              echo "sk-register: 启动，node=${NODE_ID} host=${HOST}"
+              # 启动即注册（若 SC 尚未就绪会失败，下方 reconcile 循环会重试）
+              register_once "${NODE_ID}" || true
+
+              # 周期对账：覆盖 SC 重启、记录丢失、被误改为非 active 等情况
+              RECONCILE={{ .Values.sidecar.reconcileIntervalSeconds }}
+              while true; do
+                sleep "${RECONCILE}" &
+                wait $!
+                register_once "${NODE_ID}" || true
+              done
+          resources:
+            {{- toYaml .Values.sidecar.resources | nindent 14 }}
+      {{- end }}
+      volumes:
+        - name: node-id
+          emptyDir: {}
+        - name: jwt
+          secret:
+            secretName: {{ .Values.settings.jwtSecretName | default (dig "jwt" "secretName" "" .Values.global) }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.statefulSet.storage.storageClassName }}
+        storageClassName: {{ .Values.statefulSet.storage.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.statefulSet.storage.size }}

@@ -1,0 +1,25 @@
+Neon 生产级部署已就绪（umbrella: {{ .Chart.Name }} / release: {{ .Release.Name }}）。
+
+部署前请确认以下外部依赖已就绪：
+  1. 外部 PostgreSQL（storage-controller 元数据后端）—— 通过 --set neon-storage-controller.settings.databaseUrl=... 提供
+  2. 外部 MinIO / S3 凭证 —— 在命名空间内创建名为 bucket-credentials 的 Secret（字段 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_ENDPOINT_URL / AWS_REGION / BUCKET_NAME），见 docs/plan.md 顶部示例
+  3. Ed25519 密钥对与 JWT —— 通过 --set global.jwt.publicKey=... global.jwt.privateKey=... 及各 scope token 提供（openssl genpkey -algorithm ed25519 生成；control-plane 用私钥签发，pageserver/safekeeper 用公钥校验）
+
+安装示例：
+  helm dependency build charts/neon
+  helm install neon charts/neon -n neon --create-namespace \
+    --set neon-storage-controller.settings.databaseUrl='postgres://user:pass@<pg-host>:5432/storage_controller' \
+    --set-file global.jwt.publicKey=publicKey.pem \
+    --set-file global.jwt.privateKey=privateKey.pem \
+    --set global.jwt.pageserverJwtToken=<tok> --set global.jwt.safekeeperJwtToken=<tok> \
+    --set global.jwt.controlPlaneJwtToken=<tok> --set global.jwt.peerJwtToken=<tok>
+
+验证端到端：
+  # 创建 project / branch / endpoint（控制面返回 ComputeSpec）
+  kubectl exec deploy/neon-control-plane-svc -- curl -s localhost:8080/projects -X POST
+  # phase-1 直连 compute（client → compute Service）
+  psql "postgresql://cloud_admin@<neon-compute-svc>:5432/postgres?sslmode=disable"
+
+组件服务名（release=neon 时）：
+  neon-broker-svc:50051  neon-storage-controller-svc:50051  neon-control-plane-svc:8080
+  neon-pageserver-svc:64000/9898  neon-safekeeper-svc:5454/7676  neon-compute-svc:5432
