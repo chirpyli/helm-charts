@@ -41,13 +41,13 @@ var (
 type state struct {
 	mu        sync.RWMutex
 	projects  map[string]*Project
-	branches  map[string]*Branch   // 新增：branch_id → Branch
+	branches  map[string]*Branch // 新增：branch_id → Branch
 	endpoints map[string]*Endpoint
 
 	// 默认租户和时间线（bootstrap 创建，作为 main 分支）
-	tenantID         string
+	tenantID          string
 	defaultTimelineID string // 初始时间线 ID（main 分支）
-	defaultBranchID  string // 默认分支 ID（br-main）
+	defaultBranchID   string // 默认分支 ID（br-main）
 }
 
 // setDefaultTimeline 设置默认时间线 ID 和对应的默认分支 ID。
@@ -219,6 +219,31 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 // Project API 实现
 // =============================================================================
 
+// computeEndpointAddress 返回 endpoint 对外的 host:port 地址字符串。
+//
+//   - ClusterIP（默认）：返回集群内 DNS 地址 <svc>.<ns>.svc.cluster.local:5432，
+//     适用于集群内或 proxy 访问。
+//   - NodePort：返回 <外部主机>:<nodePort>。nodePort 由 K8s 在创建 Service 时
+//     自动分配（30000-32767），需通过 kc.getServiceNodePort 回读；外部主机取自
+//     cfg.NodePortExternalHost（节点 IP / 域名 / 负载均衡器 VIP）。
+//
+// 当 kc 为 nil（控制面未运行在集群内）或 NodePort 回读失败时，
+// 自动回退到 ClusterIP 形式，保证至少返回一个可用地址。
+func computeEndpointAddress(kc *kubeClient, svcName string) string {
+	if cfg.ComputeServiceType == "NodePort" && kc != nil {
+		if nodePort, err := kc.getServiceNodePort(svcName); err == nil && nodePort > 0 {
+			host := cfg.NodePortExternalHost
+			if host == "" {
+				// 未配置外部主机时回退本机地址，便于同机直连排查。
+				host = "localhost"
+			}
+			return fmt.Sprintf("%s:%d", host, nodePort)
+		}
+		logWarn("computeEndpointAddress: NodePort 回读失败，回退 ClusterIP 形式")
+	}
+	return fmt.Sprintf("%s.%s.svc.cluster.local:5432", svcName, podNamespace())
+}
+
 // createProject 创建新 project。
 //
 // 对齐 Neon Cloud API 行为：
@@ -264,7 +289,7 @@ func createProject(w http.ResponseWriter, r *http.Request) {
 	operations := make([]map[string]string, 0)
 	_, code, err := sc.do(context.Background(), http.MethodPost, "/v1/tenant", "pageserverapi",
 		map[string]interface{}{
-			"new_tenant_id": tenantID,
+			"new_tenant_id":    tenantID,
 			"shard_parameters": map[string]interface{}{"count": 1, "stripe_size": 1024},
 		})
 	if err != nil {
@@ -328,8 +353,12 @@ func createProject(w http.ResponseWriter, r *http.Request) {
 	st.mu.Unlock()
 
 	// 7) K8s 动态拉起 compute（若启用）
+	// kc 声明在函数作用域，便于下方构造连接串时回读 NodePort。
+	var kc *kubeClient
 	if cfg.EnableK8sCompute {
-		if kc, kcErr := newKubeClient(); kcErr == nil {
+		var kcErr error
+		kc, kcErr = newKubeClient()
+		if kcErr == nil {
 			if err := kc.createDeployment(buildComputeDeployment(ep)); err != nil {
 				logWarn("createProject %s: create compute deployment %s: %v",
 					projectID, ep.EndpointID, err)
@@ -360,8 +389,8 @@ func createProject(w http.ResponseWriter, r *http.Request) {
 		"connection_uris": []map[string]string{
 			{
 				"connection_uri": fmt.Sprintf(
-					"postgresql://%s@%s.%s.svc.cluster.local:5432/%s",
-					roleName, computeServiceName(ep.EndpointID), podNamespace(), databaseName,
+					"postgresql://%s@%s/%s",
+					roleName, computeEndpointAddress(kc, computeServiceName(ep.EndpointID)), databaseName,
 				),
 				"connection_parameters": fmt.Sprintf(
 					"{\"database\":\"%s\",\"role\":\"%s\"}", databaseName, roleName,
@@ -412,6 +441,7 @@ func getProject(w http.ResponseWriter, r *http.Request, id string) {
 //  4. 删除 SC tenant（best-effort）— 每个 project 独占一个 tenant
 //  5. 从 state 中移除所有 branch、endpoint 和 project
 //  6. 持久化
+//
 // 返回被删除的 project 信息（HTTP 200）。
 func deleteProject(w http.ResponseWriter, r *http.Request, projectID string) {
 	// 1) 校验 project 是否存在（先读锁，确认存在后再加写锁）
@@ -502,10 +532,10 @@ func deleteProject(w http.ResponseWriter, r *http.Request, projectID string) {
 
 	// 返回 Neon 兼容响应（含被删除 project 信息、各分支操作状态、tenant 状态）
 	resp := map[string]interface{}{
-		"project":        &projectCopy,
-		"branches":       branchResults,
+		"project":         &projectCopy,
+		"branches":        branchResults,
 		"endpoints_count": len(projectEndpoints),
-		"tenant_deleted": tenantDeleted,
+		"tenant_deleted":  tenantDeleted,
 	}
 	if tenantErr != "" {
 		resp["tenant_delete_error"] = tenantErr
@@ -578,7 +608,7 @@ func createBranch(w http.ResponseWriter, r *http.Request, projectID string) {
 	_, code, err := sc.do(context.Background(), http.MethodPost,
 		fmt.Sprintf("/v1/tenant/%s/timeline", p.TenantID), "pageserverapi",
 		map[string]interface{}{
-			"new_timeline_id": timelineID,
+			"new_timeline_id":      timelineID,
 			"ancestor_timeline_id": parentTimelineID,
 		})
 	if err != nil {
@@ -640,6 +670,7 @@ func listBranches(w http.ResponseWriter, r *http.Request, projectID string) {
 //  6. 向 SC 请求删除对应 timeline（best-effort）
 //  7. 从 state 中移除 branch
 //  8. 持久化
+//
 // 支持查询参数 hard_delete=true（记录在响应中，当前无软删除/恢复窗口）。
 func deleteBranch(w http.ResponseWriter, r *http.Request, projectID, branchID string) {
 	// 1) 校验 project 存在
@@ -683,9 +714,9 @@ func deleteBranch(w http.ResponseWriter, r *http.Request, projectID, branchID st
 
 	if len(childBranches) > 0 {
 		writeJSON(w, http.StatusConflict, map[string]interface{}{
-			"error":           "cannot delete a branch that has child branches",
-			"child_branches":  childBranches,
-			"hint":            "delete all child branches first before deleting this branch",
+			"error":          "cannot delete a branch that has child branches",
+			"child_branches": childBranches,
+			"hint":           "delete all child branches first before deleting this branch",
 		})
 		return
 	}
@@ -770,8 +801,9 @@ func deleteBranch(w http.ResponseWriter, r *http.Request, projectID, branchID st
 // 这是 createProject（自动创建 endpoint）和 createEndpoint API 的共享实现。
 //
 // 流程：
-//   定位 pageserver → 获取 safekeeper 列表 → 签发 storage JWT → 生成 SCRAM 验证器
-//   → 组装 ComputeSpec → 返回 Endpoint 对象 + 明文密码
+//
+//	定位 pageserver → 获取 safekeeper 列表 → 签发 storage JWT → 生成 SCRAM 验证器
+//	→ 组装 ComputeSpec → 返回 Endpoint 对象 + 明文密码
 //
 // 返回的 Endpoint 和明文 SCRAM 密码由调用方负责注册到 state 和持久化。
 func prepareEndpointForBranch(projectID, tenantID, timelineID, branchID,
@@ -839,7 +871,12 @@ func prepareEndpointForBranch(projectID, tenantID, timelineID, branchID,
 			// 必须设置 shared_preload_libraries='neon'，否则 neon SMGR 扩展不会加载
 			// PostgreSQL 回退到标准 md.c 存储 → 找不到 pageserver 上的数据文件 → 崩溃
 			// neon config.rs 中 write_postgres_conf 会在 ComputeAudit::Disabled 时不写该设置
-			Settings: &[]GenericOption{{Name: "shared_preload_libraries", Value: strPtr("neon"), Vartype: "string"}},
+			Settings: &[]GenericOption{
+				{Name: "shared_preload_libraries", Value: strPtr("neon"), Vartype: "string"},
+				// 必须监听所有网卡地址（*），否则 compute Pod 内 Postgres 仅监听 127.0.0.1，
+				// 外部/节点通过 NodePort 或 podIP 访问 5432 会被拒绝（connection refused）
+				{Name: "listen_addresses", Value: strPtr("*"), Vartype: "string"},
+			},
 		},
 	}
 
@@ -934,8 +971,12 @@ func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
 	st.mu.Unlock()
 
 	// 5) K8s 动态拉起 compute（若启用）
+	// kc 声明在函数作用域，便于下方构造连接串时回读 NodePort。
+	var kc *kubeClient
 	if cfg.EnableK8sCompute {
-		if kc, kcErr := newKubeClient(); kcErr == nil {
+		var kcErr error
+		kc, kcErr = newKubeClient()
+		if kcErr == nil {
 			if err := kc.createDeployment(buildComputeDeployment(ep)); err != nil {
 				logWarn("createEndpoint %s: create compute deployment: %v", ep.EndpointID, err)
 			} else {
@@ -954,10 +995,10 @@ func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
 	triggerPersist()
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"endpoint":       ep,
+		"endpoint": ep,
 		"connection_uri": fmt.Sprintf(
-			"postgresql://%s@%s.%s.svc.cluster.local:5432/%s",
-			roleName, computeServiceName(ep.EndpointID), podNamespace(), databaseName,
+			"postgresql://%s@%s/%s",
+			roleName, computeEndpointAddress(kc, computeServiceName(ep.EndpointID)), databaseName,
 		),
 		"password": scramPassword,
 	})
@@ -1054,8 +1095,22 @@ func getComputeSpec(w http.ResponseWriter, r *http.Request, computeID string) {
 
 	// 确保 spec 中的页面服务器信息是最新的
 	// 如果 spec 为空或需要动态刷新，尝试从 SC locate 重建
-	if ep.Spec == nil {
-		log.Printf("getComputeSpec %s: spec is nil, rebuilding", computeID)
+	// 始终确保返回的 spec 含最新的 cluster/settings（尤其是 listen_addresses）。
+	// 若缓存的 spec 为空或不含 listen_addresses，则基于当前配置重建；
+	// 否则复用缓存，避免每次请求都向 SC 发起 tenantLocate。
+	needRebuild := ep.Spec == nil || ep.Spec.Cluster == nil
+	if !needRebuild && ep.Spec.Cluster.Settings != nil {
+		hasListen := false
+		for _, o := range *ep.Spec.Cluster.Settings {
+			if o.Name == "listen_addresses" {
+				hasListen = true
+				break
+			}
+		}
+		needRebuild = !hasListen
+	}
+	if needRebuild {
+		log.Printf("getComputeSpec %s: rebuilding spec", computeID)
 		ep.Spec = buildSpecFromEndpoint(ep)
 	}
 
@@ -1117,8 +1172,10 @@ func wakeCompute(w http.ResponseWriter, r *http.Request) {
 		branchID = ep.BranchID
 	}
 
+	// 构造对外地址：NodePort 模式回读节点端口，否则返回集群内 DNS。
+	kc, _ := newKubeClient()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"address":     fmt.Sprintf("%s.%s.svc.cluster.local:5432", computeServiceName(endpointish), podNamespace()),
+		"address":     computeEndpointAddress(kc, computeServiceName(endpointish)),
 		"server_name": nil,
 		"aux": map[string]string{
 			"endpoint_id":     endpointish,
@@ -1166,6 +1223,20 @@ func buildSpecFromEndpoint(ep *Endpoint) *ComputeSpec {
 		tok = ep.Spec.StorageAuthToken // 回退到已有 token
 	}
 
+	// 角色/数据库优先复用 endpoint 已持久化的 spec（含项目自定义的
+	// role_name/database_name 与正确 SCRAM verifier），避免重建时被硬编码的
+	// cloud_admin/postgres 覆盖（例如项目创建的 sally/mydb）。
+	roles := []RoleSpec{{Name: "cloud_admin", EncryptedPassword: ep.ScramVerifier}}
+	dbs := []DatabaseSpec{{Name: "postgres", Owner: "cloud_admin"}}
+	if ep.Spec != nil && ep.Spec.Cluster != nil {
+		if len(ep.Spec.Cluster.Roles) > 0 {
+			roles = ep.Spec.Cluster.Roles
+		}
+		if len(ep.Spec.Cluster.Databases) > 0 {
+			dbs = ep.Spec.Cluster.Databases
+		}
+	}
+
 	return &ComputeSpec{
 		FormatVersion:            1.0,
 		TenantID:                 ep.TenantID,
@@ -1180,10 +1251,15 @@ func buildSpecFromEndpoint(ep *Endpoint) *ComputeSpec {
 		SuspendTimeoutSeconds:    0, // 0 表示不自动挂起
 		LocalProxyConfig:         &LocalProxySpec{Jwks: []JwksSettings{}},
 		Cluster: &ClusterSpec{
-			Roles:     []RoleSpec{{Name: "cloud_admin", EncryptedPassword: ep.ScramVerifier}},
-			Databases: []DatabaseSpec{{Name: "postgres", Owner: "cloud_admin"}},
+			Roles:     roles,
+			Databases: dbs,
 			// 必须设置 shared_preload_libraries='neon'，否则 neon SMGR 扩展不会加载
-			Settings: &[]GenericOption{{Name: "shared_preload_libraries", Value: strPtr("neon"), Vartype: "string"}},
+			Settings: &[]GenericOption{
+				{Name: "shared_preload_libraries", Value: strPtr("neon"), Vartype: "string"},
+				// 必须监听所有网卡地址（*），否则 compute Pod 内 Postgres 仅监听 127.0.0.1，
+				// 外部/节点通过 NodePort 或 podIP 访问 5432 会被拒绝（connection refused）
+				{Name: "listen_addresses", Value: strPtr("*"), Vartype: "string"},
+			},
 		},
 	}
 }

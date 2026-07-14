@@ -13,6 +13,12 @@ type Config struct {
 	Safekeepers          []Node `json:"safekeepers"`
 	ComputeImage         string `json:"compute_image"`
 	EnableK8sCompute     bool   `json:"enable_k8s_compute"`
+	// ComputeServiceType 动态拉起的 compute Service 类型：ClusterIP（默认）或 NodePort。
+	// 仅当 EnableK8sCompute=true 时生效；NodePort 用于集群外直连（无 proxy / LoadBalancer 场景）。
+	ComputeServiceType string `json:"compute_service_type"`
+	// NodePortExternalHost NodePort 模式下对外的可达主机（节点 IP / 域名 / 负载均衡器 VIP）。
+	// 拼接到返回给用户的连接串 <NodePortExternalHost>:<nodePort>；为空时回退 localhost。
+	NodePortExternalHost string `json:"node_port_external_host"`
 	Domain               string `json:"domain"`
 }
 
@@ -58,8 +64,8 @@ type Endpoint struct {
 	TimelineID    string       `json:"timeline_id"`
 	BranchID      string       `json:"branch_id"`
 	ComputeImage  string       `json:"compute_image"`
-	ScramVerifier string       `json:"-"`            // SCRAM 验证器（不入持久化，见下方说明）
-	ScramPassword string       `json:"-"`            // 明文密码（仅在创建时返回给用户，不入持久化）
+	ScramVerifier string       `json:"-"` // SCRAM 验证器（不入持久化，见下方说明）
+	ScramPassword string       `json:"-"` // 明文密码（仅在创建时返回给用户，不入持久化）
 	Spec          *ComputeSpec `json:"spec"`
 	Status        string       `json:"status"`
 }
@@ -72,19 +78,19 @@ type Endpoint struct {
 // 示例：{"project":{"name":"myproject","branch":{"name":"main","role_name":"sally","database_name":"mydb"}}}
 type ProjectCreateRequest struct {
 	Project struct {
-		Name   string `json:"name"`                       // project 名称（必填，Neon Cloud 中必填）
+		Name   string `json:"name"` // project 名称（必填，Neon Cloud 中必填）
 		Branch struct {
-			Name         string `json:"name"`             // 初始分支名称（默认 "main"）
-			RoleName     string `json:"role_name"`        // 初始角色名（默认 "cloud_admin"）
-			DatabaseName string `json:"database_name"`    // 初始数据库名（默认 "neondb"）
+			Name         string `json:"name"`          // 初始分支名称（默认 "main"）
+			RoleName     string `json:"role_name"`     // 初始角色名（默认 "cloud_admin"）
+			DatabaseName string `json:"database_name"` // 初始数据库名（默认 "neondb"）
 		} `json:"branch"`
 	} `json:"project"`
 }
 
 // EndpointCreateRequest POST /projects/{id}/endpoints 请求体。
 type EndpointCreateRequest struct {
-	BranchID string `json:"branch_id"`               // 目标分支 ID
-	Type     string `json:"type"`                     // "read_write" | "read_only"
+	BranchID string `json:"branch_id"` // 目标分支 ID
+	Type     string `json:"type"`      // "read_write" | "read_only"
 }
 
 // BranchCreateRequest POST /projects/{id}/branches 请求体。

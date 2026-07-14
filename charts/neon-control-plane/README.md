@@ -723,6 +723,8 @@ neon-control-plane listening on :8080
 4. **验证**：
 
 ```bash
+kubectl port-forward -n neon svc/neon-control-plane-svc 8080:8080
+
 curl http://localhost:8080/healthz              # ok
 curl http://localhost:8080/projects              # []
 # 创建 project（自动创建 tenant + timeline + endpoint）

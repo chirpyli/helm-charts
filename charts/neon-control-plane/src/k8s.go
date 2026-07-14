@@ -117,7 +117,7 @@ func (k *kubeClient) deleteDeployment(name string) error {
 type listDeploymentsResp struct {
 	Items []struct {
 		Metadata struct {
-			Name   string `json:"name"`
+			Name   string            `json:"name"`
 			Labels map[string]string `json:"labels"`
 		} `json:"metadata"`
 	} `json:"items"`
@@ -182,6 +182,36 @@ func (k *kubeClient) deleteService(name string) error {
 		return fmt.Errorf("delete service %s -> HTTP %d: %s", name, code, string(data))
 	}
 	return nil
+}
+
+// getServiceNodePort 回读 Service 实际分配的 NodePort 端口。
+// NodePort Service 创建时 K8s 会在 30000-32767 范围内自动分配端口，
+// 控制面必须回读后才能把正确的 <host>:<nodePort> 返回给用户。
+// ClusterIP Service 没有 nodePort（返回 0）。
+func (k *kubeClient) getServiceNodePort(name string) (int, error) {
+	path := fmt.Sprintf("/api/v1/namespaces/%s/services/%s", k.namespace, name)
+	data, code, err := k.doRequest(http.MethodGet, path, nil)
+	if err != nil {
+		return 0, fmt.Errorf("get service %s: %w", name, err)
+	}
+	if code >= 300 {
+		return 0, fmt.Errorf("get service %s -> HTTP %d: %s", name, code, string(data))
+	}
+	var svc struct {
+		Spec struct {
+			Ports []struct {
+				NodePort int `json:"nodePort"`
+			} `json:"ports"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(data, &svc); err != nil {
+		return 0, fmt.Errorf("parse service %s: %w", name, err)
+	}
+	if len(svc.Spec.Ports) == 0 {
+		return 0, fmt.Errorf("service %s has no ports", name)
+	}
+	// 第一个端口（pg，5432）即用户连接入口。
+	return svc.Spec.Ports[0].NodePort, nil
 }
 
 // =============================================================================
@@ -326,11 +356,19 @@ func buildComputeDeployment(ep *Endpoint) map[string]interface{} {
 	}
 }
 
-// buildComputeService 构造 compute Pod 的 ClusterIP Service。
+// buildComputeService 构造 compute Pod 的 Service。
+// Service 类型由 cfg.ComputeServiceType 决定：
+//   - "NodePort"：集群外可通过 <节点IP>:<nodePort> 直连（无 proxy / LoadBalancer 场景）。
+//   - 其他（含空 / "ClusterIP"）：默认 ClusterIP，仅集群内可达。
 func buildComputeService(ep *Endpoint) map[string]interface{} {
 	labels := map[string]interface{}{
 		"app.kubernetes.io/name":     "neon-compute",
 		"app.kubernetes.io/instance": ep.EndpointID,
+	}
+	// Service 类型：未配置或配置非法时兜底为 ClusterIP，保证向后兼容。
+	svcType := cfg.ComputeServiceType
+	if svcType == "" {
+		svcType = "ClusterIP"
 	}
 	return map[string]interface{}{
 		"apiVersion": "v1",
@@ -342,7 +380,7 @@ func buildComputeService(ep *Endpoint) map[string]interface{} {
 		},
 		"spec": map[string]interface{}{
 			"selector": labels,
-			"type":     "ClusterIP",
+			"type":     svcType,
 			"ports": []interface{}{
 				map[string]interface{}{"name": "pg", "port": 5432, "targetPort": 5432},
 				map[string]interface{}{"name": "http", "port": 3080, "targetPort": 3080},

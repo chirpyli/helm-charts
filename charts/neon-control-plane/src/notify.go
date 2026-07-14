@@ -76,7 +76,7 @@ func handleNotifyAttach(w http.ResponseWriter, r *http.Request) {
 		log.Printf("WARN notify-attach: no endpoints found for tenant=%s", req.TenantID)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":       "ok",
+		"status":            "ok",
 		"endpoints_updated": updated,
 	})
 }

@@ -60,12 +60,12 @@ func (c *scClient) do(ctx context.Context, method, path, scope string, body inte
 // SC 返回 Vec<TenantLocateResponseShard>，每个 shard 包含 shard_id (TenantShardId) 和节点信息。
 type tenantLocateResult struct {
 	Shards []struct {
-		ShardID       string `json:"shard_id"`
-		NodeID        int    `json:"node_id"`
-		ListenPg      string `json:"listen_pg_addr"`
-		ListenPgPort  int    `json:"listen_pg_port"`
-		ListenHTTP    string `json:"listen_http_addr"`
-		ListenHTTPPort int   `json:"listen_http_port"`
+		ShardID        string `json:"shard_id"`
+		NodeID         int    `json:"node_id"`
+		ListenPg       string `json:"listen_pg_addr"`
+		ListenPgPort   int    `json:"listen_pg_port"`
+		ListenHTTP     string `json:"listen_http_addr"`
+		ListenHTTPPort int    `json:"listen_http_port"`
 	} `json:"shards"`
 	ShardParams struct {
 		StripeSize int `json:"stripe_size"`
@@ -162,18 +162,19 @@ func (c *scClient) deleteTenant(ctx context.Context, tenantID string) error {
 
 // bootstrap 幂等地把节点注册进 SC 并创建默认租户/时间线。
 // 注意：此处的默认租户/时间线仅供系统级兼容（旧 project 的回退）。
-//       新 project 通过 createProject 独立创建专属 tenant + timeline。
+//
+//	新 project 通过 createProject 独立创建专属 tenant + timeline。
 func bootstrap() error {
 	ctx := context.Background()
 
 	// 1) 注册 pageserver 节点
 	for _, ps := range cfg.Pageservers {
 		body := map[string]interface{}{
-			"node_id":             ps.ID,
-			"listen_pg_addr":      ps.Host,
-			"listen_pg_port":      ps.PGPort,
-			"listen_http_addr":    ps.Host,
-			"listen_http_port":    ps.HTTPPort,
+			"node_id":              ps.ID,
+			"listen_pg_addr":       ps.Host,
+			"listen_pg_port":       ps.PGPort,
+			"listen_http_addr":     ps.Host,
+			"listen_http_port":     ps.HTTPPort,
 			"availability_zone_id": "az1",
 		}
 		_, code, err := sc.do(ctx, "POST", "/control/v1/node", "admin", body)
@@ -212,7 +213,7 @@ func bootstrap() error {
 	// 3) 创建默认租户（幂等）
 	tid := cfg.DefaultTenantID
 	_, code, err := sc.do(ctx, "POST", "/v1/tenant", "pageserverapi", map[string]interface{}{
-		"new_tenant_id": tid,
+		"new_tenant_id":    tid,
 		"shard_parameters": map[string]interface{}{"count": 1, "stripe_size": 1024},
 	})
 	if err != nil {

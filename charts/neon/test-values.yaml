@@ -149,9 +149,11 @@ neon-control-plane:
     computeImage: "neondatabase/compute-node-v17:latest"
     enableK8sCompute: true
     domain: "neon.local"
-
+    nodePortExternalHost: "192.168.232.128"
+    computeServiceType: "NodePort"
+    
 neon-compute:
-  enabled: true
+  enabled: false
   nameOverride: "compute"
   resources:
     limits:

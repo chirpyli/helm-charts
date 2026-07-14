@@ -10,24 +10,24 @@ import (
 
 // ComputeSpec 对应 libs/compute_api/src/spec.rs 的核心字段（phase-1 最小集）。
 type ComputeSpec struct {
-	FormatVersion            float64              `json:"format_version"`
-	TenantID                 string               `json:"tenant_id"`
-	TimelineID               string               `json:"timeline_id"`
-	Mode                     string               `json:"mode"`
-	PageserverConnectionInfo PageserverConnInfo   `json:"pageserver_connection_info"`
-	SafekeeperConnstrings    []string             `json:"safekeeper_connstrings"`
-	StorageAuthToken         string               `json:"storage_auth_token"`
-	ProjectID                string               `json:"project_id,omitempty"`
-	BranchID                 string               `json:"branch_id,omitempty"`
-	EndpointID               string               `json:"endpoint_id,omitempty"`
-	Cluster                  *ClusterSpec         `json:"cluster,omitempty"`
+	FormatVersion            float64            `json:"format_version"`
+	TenantID                 string             `json:"tenant_id"`
+	TimelineID               string             `json:"timeline_id"`
+	Mode                     string             `json:"mode"`
+	PageserverConnectionInfo PageserverConnInfo `json:"pageserver_connection_info"`
+	SafekeeperConnstrings    []string           `json:"safekeeper_connstrings"`
+	StorageAuthToken         string             `json:"storage_auth_token"`
+	ProjectID                string             `json:"project_id,omitempty"`
+	BranchID                 string             `json:"branch_id,omitempty"`
+	EndpointID               string             `json:"endpoint_id,omitempty"`
+	Cluster                  *ClusterSpec       `json:"cluster,omitempty"`
 	// LocalProxyConfig 为本地 proxy 配置（含 JWKS），新版本 compute_ctl 要求此字段存在。
 	// Phase-1 不使用 JWT 认证，下发空的 jwks 列表即可。
-	LocalProxyConfig         *LocalProxySpec      `json:"local_proxy_config"`
-	EndpointStorageAddr      string               `json:"endpoint_storage_addr,omitempty"`
-	EndpointStorageToken     string               `json:"endpoint_storage_token,omitempty"`
+	LocalProxyConfig     *LocalProxySpec `json:"local_proxy_config"`
+	EndpointStorageAddr  string          `json:"endpoint_storage_addr,omitempty"`
+	EndpointStorageToken string          `json:"endpoint_storage_token,omitempty"`
 	// suspend_timeout_seconds 为必填字段（新版本 compute_ctl 引入），0 表示不自动暂停。
-	SuspendTimeoutSeconds    int64                `json:"suspend_timeout_seconds"`
+	SuspendTimeoutSeconds int64 `json:"suspend_timeout_seconds"`
 	// DatabricksSettings 为可选字段，compute_ctl 新版本支持，先省略
 }
 
@@ -60,9 +60,9 @@ type TlsConfig struct {
 
 // PageserverConnInfo：注意 shard 的 pageserver 用 libpq_url + grpc_url，没有 host/port/http_host/http_port。
 type PageserverConnInfo struct {
-	ShardCount int                    `json:"shard_count"`
-	StripeSize int                    `json:"stripe_size"`
-	Shards     map[string]ShardInfo   `json:"shards"`
+	ShardCount int                  `json:"shard_count"`
+	StripeSize int                  `json:"stripe_size"`
+	Shards     map[string]ShardInfo `json:"shards"`
 }
 
 type ShardInfo struct {
@@ -76,8 +76,8 @@ type PageserverShard struct {
 }
 
 type ClusterSpec struct {
-	Roles          []RoleSpec       `json:"roles"`
-	Databases      []DatabaseSpec   `json:"databases"`
+	Roles     []RoleSpec     `json:"roles"`
+	Databases []DatabaseSpec `json:"databases"`
 	// settings 在 Rust 端是 GenericOptions = Option<Vec<GenericOption>>，不是 map。
 	// 传 null 表示无额外设置；否则传 []GenericOption 数组。
 	Settings       *[]GenericOption `json:"settings,omitempty"`
@@ -105,6 +105,16 @@ type DatabaseSpec struct {
 // generateScramVerifier 生成 SCRAM-SHA-256 验证器字符串。
 // compute_ctl 把该串写入 PG 的 pg_auth；proxy 用 scram::ServerSecret::parse 解析同一串做鉴权，
 // 二者必须逐字节一致。
+//
+// 重要：字段顺序与分隔符必须严格遵循 Postgres / Neon 上游约定（见
+// neon/libs/proxy/postgres-protocol2/src/password/mod.rs）：
+//
+//	SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>
+//
+// 即“迭代次数在前、salt 在后，二者用冒号 ':' 分隔”。若写成
+// "SCRAM-SHA-256$<salt>$<iterations>$..."（salt 在前），Postgres 无法按
+// <iterations>:<salt> 解析，会误把整串当成明文密码重新哈希，导致最终写入
+// pg_authid 的 verifier 与客户端口令不匹配，表现为 “password authentication failed”。
 func generateScramVerifier(password string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
@@ -115,9 +125,10 @@ func generateScramVerifier(password string) (string, error) {
 	clientKey := hmacSHA256(salted, []byte("Client Key"))
 	storedKey := sha256.Sum256(clientKey)
 	serverKey := hmacSHA256(salted, []byte("Server Key"))
-	return fmt.Sprintf("SCRAM-SHA-256$%s$%d$%s:%s",
-		base64.StdEncoding.EncodeToString(salt),
+	// 严格对齐 Postgres/Neon：iterations:salt$StoredKey:ServerKey
+	return fmt.Sprintf("SCRAM-SHA-256$%d:%s$%s:%s",
 		iters,
+		base64.StdEncoding.EncodeToString(salt),
 		base64.StdEncoding.EncodeToString(storedKey[:]),
 		base64.StdEncoding.EncodeToString(serverKey),
 	), nil

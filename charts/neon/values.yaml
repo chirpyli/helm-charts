@@ -159,7 +159,10 @@ neon-control-plane:
     computeImage: "neondatabase/compute-node-v17:latest"
     enableK8sCompute: true
     domain: "neon.local"
+    nodePortExternalHost: "192.168.232.128"
+    computeServiceType: "NodePort"
 
+# 默认关闭，fixme：后续删除该代码
 neon-compute:
   # 静态回退/演示用 compute。生产环境由 control plane 动态拉起（enableK8sCompute=true），
   # 因此默认关闭；仅在 control plane 未启用 K8s 动态拉起、或需无 K8s 写权限的演示/排障时开启。

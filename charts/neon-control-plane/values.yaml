@@ -7,8 +7,9 @@ global: {}
 image:
   # -- 控制面镜像（由 charts/neon-control-plane/src 自行构建）
   repository: neon-control-plane
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
   tag: "latest"
+  # tag: "v15"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -48,6 +49,14 @@ settings:
   computeImage: "neondatabase/compute-node-v17:latest"
   # -- 是否启用 K8s 动态拉起 compute（需要 RBAC：pods/deployments/services）。false 时仅生成 spec，供静态 neon-compute 使用
   enableK8sCompute: false
+  # -- 动态拉起的 compute Service 类型：ClusterIP（默认，仅集群内可达）或 NodePort（集群外直连）。
+  # 仅当 enableK8sCompute=true 时生效。选 NodePort 时，返回给用户的连接串会改为 <nodePortExternalHost>:<nodePort>，
+  # 方便没有 proxy / LoadBalancer 的单机裸机环境直连 compute。
+  computeServiceType: ClusterIP
+  # -- NodePort 模式下对外的可达主机地址（节点 IP / 域名 / 负载均衡器 VIP）。
+  # 仅当 computeServiceType=NodePort 时使用，用于拼接到返回给用户的连接串。
+  # 为空时回退为 localhost（仅同机直连排查可用）。
+  nodePortExternalHost: ""
   # -- proxy 兼容接口域名（phase-2 启用 proxy 时使用）
   domain: "neon.local"
 
