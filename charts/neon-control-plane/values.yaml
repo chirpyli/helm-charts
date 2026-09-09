@@ -5,8 +5,8 @@
 global: {}
 
 image:
-  # -- 控制面镜像（由 charts/neon-control-plane/src 自行构建）
-  repository: neon-control-plane
+  # -- 控制面镜像（由 charts/neon-control-plane/src 自行构建并推送到私有仓库）
+  repository: 192.168.232.128:5000/neondatabase/neon-control-plane
   pullPolicy: Always
   tag: "latest"
 

@@ -724,8 +724,8 @@ CGO_ENABLED=0 go build -o neon-control-plane .
 cd charts/neon-control-plane/src
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o neon-control-plane .
 docker build -t neon-control-plane:latest .
-docker tag neon-control-plane:latest 192.168.232.128:5000/neon-control-plane:latest
-docker push 192.168.232.128:5000/neon-control-plane:latest
+docker tag neon-control-plane:latest 192.168.232.128:5000/neondatabase/neon-control-plane:latest
+docker push 192.168.232.128:5000/neondatabase/neon-control-plane:latest
 ```
 
 > Dockerfile 基于 `FROM scratch`，产物镜像约 9.5MB。
@@ -808,7 +808,7 @@ Kubernetes: `^1.18.x-x`
 | fullnameOverride                     | string | `""`                                                                                             | 完全覆盖 fullname 模板                                               |
 | global                               | object | `{}`                                                                                             | 全局配置                                                             |
 | image.pullPolicy                     | string | `"IfNotPresent"`                                                                                 | 镜像拉取策略                                                         |
-| image.repository                     | string | `"neon-control-plane"`                                                                           | 控制面镜像（由 src/ 自行构建）                                       |
+| image.repository                     | string | `"192.168.232.128:5000/neondatabase/neon-control-plane"`                                        | 控制面镜像（由 src/ 自行构建并推送到私有仓库）                       |
 | image.tag                            | string | `"latest"`                                                                                       | 覆盖镜像 tag                                                         |
 | imagePullSecrets                     | list   | `[]`                                                                                             | docker-registry secret 列表                                          |
 | metrics.enabled                      | bool   | `false`                                                                                          | 启用 Prometheus 指标自动发现                                         |

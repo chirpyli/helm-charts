@@ -1,0 +1,108 @@
+{{/*
+pre-delete 清理钩子：helm uninstall / helm upgrade --install 失败回滚删除时，
+Helm 只会删除 release 清单里声明的资源，而控制面在运行期通过 in-cluster K8s API
+动态创建的资源（compute Deployment/Service、状态 ConfigMap）不在任何 Helm 清单中，
+卸载后会变成孤儿资源长期残留。
+
+本 Job 以 pre-delete 钩子形式在「Helm 删除 release 资源之前」执行，此时 release 的
+ServiceAccount / ClusterRoleBinding 仍然存在，Job 可以复用控制面自身的 SA 完成清理，
+且不依赖控制面进程是否还活着（比在控制面里做 SIGTERM 优雅退出更可靠）。
+
+清理范围（与控制面 src/k8s.go 中的写入契约严格对应）：
+  1. Deployment / Service：标签 app.kubernetes.io/name=neon-compute
+     （由 buildComputeDeployment / buildComputeService 写入，名称为 neon-compute-<endpoint_id>）
+  2. Pod：同标签兜底删除，防止 GC 尚未回收完的孤儿 compute Pod 残留
+  3. ConfigMap：控制面状态快照 neon-cp-state（常量 stateConfigMapName = "neon-cp-state"）
+
+失败语义：清理是 best-effort，任何一步失败只打印告警、不中断整体流程（exit 0），
+因为钩子 Job 失败会阻塞 helm uninstall；资源不存在时 --ignore-not-found=true 保证幂等。
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "neon-control-plane.fullname" . }}-pre-delete-cleanup
+  labels:
+    {{- include "neon-control-plane.labels" . | nindent 4 }}
+  annotations:
+    # pre-delete：在 Helm 删除 release 资源之前执行；weight 取负数保证早于其他 pre-delete 钩子
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-10"
+    # 创建新钩子前删除旧对象；钩子成功执行后立即删除 Job，避免卸载后在命名空间留下残留
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  # 清理失败重试 2 次；整体超时 300s，避免卸载流程被长时间挂起
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        {{- include "neon-control-plane.selectorLabels" . | nindent 8 }}
+    spec:
+      # 复用控制面自身的 ServiceAccount：其 ClusterRole 已具备
+      # deployments/services/pods 的 delete 权限与 configmaps 的 delete 权限（见 serviceaccount.yaml）
+      serviceAccountName: {{ include "neon-control-plane.serviceAccountName" . }}
+      restartPolicy: OnFailure
+      containers:
+        - name: cleanup
+          image: "{{ .Values.cleanup.image.repository }}:{{ .Values.cleanup.image.tag }}"
+          imagePullPolicy: {{ .Values.cleanup.image.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -u
+              NS="${NAMESPACE}"
+              LABEL="${COMPUTE_LABEL}"
+              CM="${STATE_CONFIGMAP}"
+
+              echo "[neon-cleanup] 开始清理控制面动态创建的资源: namespace=${NS} label=${LABEL}"
+
+              # 1) 删除控制面动态拉起的 compute Service 与 Deployment（按标签批量删除，幂等）
+              #    先删 Service 再删 Deployment，避免残留 Service 继续把流量转发到正在终止的 Pod
+              echo "[neon-cleanup] 1/4 删除 compute Service"
+              kubectl -n "${NS}" delete service -l "${LABEL}" --ignore-not-found=true --timeout=120s \
+                || echo "[neon-cleanup] WARN 删除 compute Service 失败，继续清理"
+
+              echo "[neon-cleanup] 2/4 删除 compute Deployment"
+              kubectl -n "${NS}" delete deployment -l "${LABEL}" --ignore-not-found=true --timeout=120s \
+                || echo "[neon-cleanup] WARN 删除 compute Deployment 失败，继续清理"
+
+              # 2) 兜底删除同标签的残留 Pod（Deployment 级联 GC 未完成 / 孤儿 Pod 场景）
+              echo "[neon-cleanup] 3/4 删除残留 compute Pod"
+              kubectl -n "${NS}" delete pod -l "${LABEL}" --ignore-not-found=true --timeout=120s \
+                || echo "[neon-cleanup] WARN 删除 compute Pod 失败，继续清理"
+
+              # 3) 删除控制面运行时持久化的状态快照 ConfigMap
+              echo "[neon-cleanup] 4/4 删除控制面状态 ConfigMap ${CM}"
+              kubectl -n "${NS}" delete configmap "${CM}" --ignore-not-found=true --timeout=120s \
+                || echo "[neon-cleanup] WARN 删除状态 ConfigMap 失败，继续清理"
+
+              # 4) best-effort 收尾：无论上述步骤是否全部成功，都以 0 退出，不阻塞卸载
+              echo "[neon-cleanup] 清理完成"
+          env:
+            # 清理目标命名空间：与 release 严格一致（控制面动态创建资源时使用的也是该命名空间）
+            - name: NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            # compute 资源的标签契约，必须与 src/k8s.go 中 buildComputeDeployment/buildComputeService 保持一致
+            - name: COMPUTE_LABEL
+              value: "app.kubernetes.io/name=neon-compute"
+            # 控制面状态快照 ConfigMap 名称，必须与 src/k8s.go 中的常量 stateConfigMapName 保持一致
+            - name: STATE_CONFIGMAP
+              value: "neon-cp-state"
+          resources:
+            {{- toYaml .Values.cleanup.resources | nindent 12 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
