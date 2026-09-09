@@ -1,14 +1,6 @@
 # neon
 
-![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) [![Lint and Test Charts](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml/badge.svg)](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml)
-
-Neon完整部署 umbrella chart — 一键部署Neon服务。
-
-
-## Source Code
-
-* [https://github.com/neondatabase/neon](https://github.com/neondatabase/neon)
-
+ 一键部署Neon服务。
 
 ## 简介
 
@@ -23,45 +15,6 @@ Neon完整部署 umbrella chart — 一键部署Neon服务。
 | `neon-control-plane`      | Deployment  | 最小控制面（project/endpoint API）           | ✅ 启用     |
 
 
-## 安装
-
-```console
-# 1. 创建命名空间
-kubectl create namespace neon
-
-# 2. 创建 bucket-credentials Secret（见上）
-
-# 3. 准备 values 文件（填入 databaseUrl / MinIO endpoint / JWT 密钥等）
-
-# 4. 下载依赖并安装
-$ cd charts/neon
-$ helm dependency build .
-$ helm install neon . -n neon -f my-values.yaml
-```
-
-### 部署前置：为节点打可用区（AZ）标签
-
-pageserver / safekeeper 的可用区**不再由 values 静态指定**，而是在 Pod 启动时由 init 容器通过
-kube-apiserver 读取**所在节点**的 `topology.kubernetes.io/zone` 标签动态获取（需要 `nodes: get` 权限，
-默认由各子 chart 的 `rbac.nodeReader.enabled` 自动创建 ClusterRole/ClusterRoleBinding）。
-
-因此部署前必须给每个会运行 pageserver / safekeeper 的节点打上该标签，否则对应 Pod 会停在 Init 状态并输出告警日志：
-
-```console
-# 查看节点当前是否已有 zone 标签
-kubectl get nodes -L topology.kubernetes.io/zone
-
-# 为每个节点打标签（把 <az> 换成实际可用区名，如 az1 / cn-north-1a）
-kubectl label node <node-name> topology.kubernetes.io/zone=<az> --overwrite
-```
-
-> 💡 说明：
->
-> - 多可用区集群中，同一份 chart 部署出来的不同 Pod 会自动获得各自节点的真实 AZ；
->   storage controller 会据此做时间线放置与 pageserver↔safekeeper 的同区优选。
-> - 若集群由平台方统一授权（不想由 Helm 创建集群级 RBAC），可将
->   `neon-pageserver.rbac.nodeReader.enabled` / `neon-safekeeper.rbac.nodeReader.enabled` 置为 `false`，
->   但必须自行保证对应 ServiceAccount 具备 `nodes: get` 权限。
 
 ## 更新
 
@@ -83,10 +36,7 @@ $ helm upgrade neon neon-0.1.0.tgz -n neon -f my-values.yaml
 >
 > - 修改 `my-values.yaml` 后重新 `helm upgrade` 即可让配置生效（部分有状态组件如 pageserver / safekeeper 的资源变更可能需要手动滚动重启）。
 > - 涉及子 chart 镜像、模板（templates）改动时，务必先 `helm dependency build .` 重新打包，否则 `helm upgrade` 仍会使用已缓存的旧依赖。
-> - 使用 `--reuse-values` 可在不提供完整 values 文件时，仅覆盖个别字段：
->   ```console
->   helm upgrade neon . -n neon --reuse-values --set neon-pageserver.statefulSet.replicas=3
->   ```
+
 
 ## 卸载
 
@@ -171,19 +121,31 @@ Kubernetes: `^1.18.x-x`
 
 ### 全局配置
 
-| Key                             | Type   | Default        | Description                                                 |
-| ------------------------------- | ------ | -------------- | ----------------------------------------------------------- |
-| jwtSecretName                   | string | `"neon-jwt"` | 共享 JWT 密钥 Secret 名称（umbrella 创建，供子 chart 挂载） |
-| global.region                   | string | `"local"`    | 区域标识                                                    |
-| global.jwt.existingSecret       | string | `""`         | 已有 Secret 名称（若设置则不新建）                          |
-| global.jwt.secretName           | string | `"neon-jwt"` | 共享 Secret 名称                                            |
-| global.jwt.publicKey            | string | `""`         | Ed25519 公钥 PEM（含 -----BEGIN PUBLIC KEY-----）           |
-| global.jwt.privateKey           | string | `""`         | Ed25519 私钥 PEM（含 -----BEGIN PRIVATE KEY-----）          |
-| global.jwt.pageserverJwtToken   | string | `""`         | PageServerApi scope JWT（SC→pageserver）                   |
-| global.jwt.safekeeperJwtToken   | string | `""`         | SafekeeperData scope JWT（SC→safekeeper）                  |
-| global.jwt.controlPlaneJwtToken | string | `""`         | ControlPlane scope JWT（SC→control plane upcall）          |
-| global.jwt.peerJwtToken         | string | `""`         | Admin scope JWT（SC→peer SC）                              |
-| global.jwt.computeJwtToken      | string | `""`         | Tenant scope JWT（compute→pageserver/safekeeper）          |
+| Key                       | Type   | Default | Description                                                                                                      |
+| ------------------------- | ------ | ------- | ---------------------------------------------------------------------------------------------------------------- |
+| global.region             | string | `"local"` | 区域标识                                                                                                        |
+| global.jwt.existingSecret | string | `""`    | **必填**：外部预建的共享 JWT Secret 名称。chart 不再创建该 Secret，也不接收任何密钥/token 明文；缺失时渲染报错 |
+
+共享 JWT Secret 的键契约（由仓库根目录 `jwt.py` 生成，键名勿改）：
+
+| 键                       | 内容                        | 消费方                                                                |
+| ------------------------ | --------------------------- | --------------------------------------------------------------------- |
+| `publicKey.pem`          | Ed25519 公钥 PEM            | pageserver / safekeeper / storage-controller / control-plane（校验）  |
+| `privateKey.pem`         | Ed25519 私钥 PEM            | **仅** control-plane（签发）                                          |
+| `pageserverJwtToken`     | scope `pageserverapi`       | storage-controller → pageserver                                       |
+| `safekeeperJwtToken`     | scope `safekeeperdata`      | pageserver → safekeeper、storage-controller                           |
+| `controlPlaneJwtToken`   | scope `controlplane`        | storage-controller → control-plane upcall                             |
+| `peerJwtToken`           | scope `admin`               | safekeeper 注册 sidecar、storage-controller 副本间                    |
+| `generationsApiJwtToken` | scope `generations_api`     | pageserver → storage-controller upcall（re-attach / validate）        |
+| `computeJwtToken`        | scope `tenant`              | 预留（当前无消费方，控制面持有私钥可自行签发）                        |
+
+生成与引用：
+
+```bash
+python3 jwt.py --namespace neon --secret-name neon-jwt
+kubectl apply -f jwt-out/neon-jwt.secret.yaml   # 需入库时请先 SOPS / Sealed Secrets 加密
+helm install neon charts/neon -n neon --set global.jwt.existingSecret=neon-jwt
+```
 
 ### neon-storage-broker
 
@@ -205,13 +167,13 @@ Kubernetes: `^1.18.x-x`
 | neon-storage-controller.resources.limits.memory       | string | `"512Mi"`                              | 内存上限（测试环境；生产 >= 4Gi）         |
 | neon-storage-controller.resources.requests.cpu        | string | `"1"`                                  | CPU 请求（测试环境；生产 >= 2）           |
 | neon-storage-controller.resources.requests.memory     | string | `"512Mi"`                              | 内存请求（测试环境；生产 >= 4Gi）         |
-| neon-storage-controller.settings.databaseUrl          | string | `""`                                   | 外部 PostgreSQL 连接串（**必填**）  |
-| neon-storage-controller.settings.publicKey            | string | `""`                                   | Ed25519 公钥 PEM                          |
-| neon-storage-controller.settings.jwtToken             | string | `""`                                   | PageServerApi scope JWT                   |
-| neon-storage-controller.settings.safekeeperJwtToken   | string | `""`                                   | SafekeeperData scope JWT                  |
-| neon-storage-controller.settings.controlPlaneJwtToken | string | `""`                                   | ControlPlane scope JWT                    |
-| neon-storage-controller.settings.peerJwtToken         | string | `""`                                   | Admin scope JWT                           |
+| global.storageController.databaseUrl.existingSecret   | string | `"storage-controller-pg-cluster"`      | 外部 PostgreSQL 连接串 Secret 名称（**必填**，chart 只引用不创建） |
+| global.storageController.databaseUrl.secretKey        | string | `"uri"`                                | 上述 Secret 中存放连接串的键名（CloudNativePG / docs 示例均用 `uri`） |
+| neon-storage-controller.settings.jwtSecretName        | string | `""`                                   | 共享 JWT Secret 名称（留空时回退 `global.jwt.existingSecret`） |
 | neon-storage-controller.settings.controlPlaneUrl      | string | `"http://neon-control-plane-svc:8080"` | control plane upcall 地址（严格模式必填） |
+
+注意：storage-controller 的公钥与各 scope token 不再通过 values 传递，
+统一由 `global.jwt.existingSecret` 指向的共享 Secret 以 `secretKeyRef` 注入环境变量。
 
 ### neon-pageserver
 
@@ -227,10 +189,9 @@ Kubernetes: `^1.18.x-x`
 | neon-pageserver.settings.brokerEndpoint               | string | `"http://neon-broker-svc:50051"`             | broker 地址          |
 | neon-pageserver.settings.storageControllerUrl         | string | `"http://neon-storage-controller-svc:50051"` | SC 地址              |
 | neon-pageserver.rbac.nodeReader.enabled               | bool   | `true`                                       | 是否创建读取节点 zone 标签的 RBAC（nodes: get） |
-| neon-pageserver.settings.remoteStorage.bucketName     | string | `"neondata"`                                 | bucket 名            |
-| neon-pageserver.settings.remoteStorage.bucketRegion   | string | `"us-east-1"`                                | region               |
-| neon-pageserver.settings.remoteStorage.endpoint       | string | `"http://192.168.232.128:9000"`              | MinIO/S3 endpoint    |
-| neon-pageserver.settings.remoteStorage.prefixInBucket | string | `"pageserver"`                               | 路径前缀             |
+| neon-pageserver.settings.remoteStorage.existingSecret | string | `""`                                         | 对象存储 Secret 名称（坐标与凭证的唯一事实来源），留空回退 `global.storage.bucket.existingSecret` |
+| neon-pageserver.settings.remoteStorage.prefixInBucket | string | `"pageserver"`                               | 路径前缀（布局参数，非连接坐标） |
+| global.storage.bucket.existingSecret                  | string | `"bucket-credentials"`                       | 对象存储 Secret 名称（全局入口） |
 
 ### neon-safekeeper
 

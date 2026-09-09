@@ -10,7 +10,7 @@ image:
   # -- Neondatabase image repository
   repository: neondatabase/neon
   # -- image pull policy
-  pullPolicy: Always
+  pullPolicy: IfNotPresent
   # -- Overrides the image tag whose default is the chart appVersion.
   tag: "latest"
 
@@ -28,18 +28,25 @@ settings:
   sentryUrl: ""
   # settings.sentryEnvironment -- "development" or "production". It will be visible in sentry in order to filter issues
   sentryEnvironment: "development"
-  # postgresql:// URL to the database
-  databaseUrl: ""
-  # JWT token for authentication with pageservers
-  jwtToken: ""
-  # -- JWT token for authentication with safekeepers
-  safekeeperJwtToken: ""
-  # -- JWT token for authentication with other storage controller instances
-  peerJwtToken: ""
-  # public key for authenticating incoming HTTP requests
-  publicKey: ""
-  # JWT token for authenticating calls to controlPlaneUrl
-  controlPlaneJwtToken: ""
+  # -- 外部 PostgreSQL 连接串所在的 Secret 名称（必填，chart 不创建它）。
+  # storage_controller 只支持两种取到连接串的方式（见 storage_controller/src/main.rs
+  # 的 Secrets::load）：CLI `--database-url` 或环境变量 DATABASE_URL，其中 CLI 会把密码
+  # 暴露在 Pod spec 里，因此本 chart 统一用 env.secretKeyRef 注入 DATABASE_URL。
+  databaseUrlSecretName: "storage-controller-pg-cluster"
+  # -- 上述 Secret 中存放连接串的键名。
+  databaseUrlSecretKey: "uri"
+  # -- 共享 JWT Secret 名称（外部预建，键契约见 charts/neon/templates/NOTES.txt）。
+  # storage_controller 通过环境变量读取密钥（见 storage_controller/src/main.rs 的 Secrets::load），
+  # chart 以 secretKeyRef 从该 Secret 注入：
+  #   PUBLIC_KEY                <- publicKey.pem
+  #   PAGESERVER_JWT_TOKEN      <- pageserverJwtToken
+  #   SAFEKEEPER_JWT_TOKEN      <- safekeeperJwtToken
+  #   CONTROL_PLANE_JWT_TOKEN   <- controlPlaneJwtToken
+  #   PEER_JWT_TOKEN            <- peerJwtToken
+  # 因此这里不再提供任何 token / 公钥的明文入口：放在 values 里会被写进本 chart 自建的
+  # Secret，最终同时存在于两处，既扩大暴露面也让轮换必须走 helm upgrade。
+  # 留空时回退 global.jwt.existingSecret > global.jwt.secretName。
+  jwtSecretName: ""
   # -- Base URL for control plane API endpoints (e.g., https://control-plane.example.com/storage/api/v1/)
   controlPlaneUrl: ""
   # -- Base URL for control plane management API (e.g., https://control-plane.example.com:1000/)
@@ -122,8 +129,9 @@ registerControlPlane:
   port: 50051
   # -- control plane API URL（如 https://control-plane.example.com/storage/api/v1/）
   cplane_url: ""
-  # -- 调用 control plane API 的 JWT token（仅 job 使用，若为空则回退到 settings.controlPlaneJwtToken）
-  controlPlaneJwtToken: ""
+  # 注意：调用 control plane API 的 JWT token 不再通过此字段填写。
+  # 注册 Job 改为从共享 JWT Secret 的 controlPlaneJwtToken 键读取（需设置 global.jwt.existingSecret），
+  # 因此 enable=true 时若未配置共享 Secret，渲染阶段会直接报错。
   resources:
     limits:
       cpu: 100m

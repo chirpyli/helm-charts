@@ -16,7 +16,7 @@ metadata:
   name: neon
 
 ---
-# 外部 MinIO S3 凭证（运行在 :9000，非 K8s 内部）
+# 外部 MinIO S3 —— 对象存储的**唯一事实来源**（凭证 + 连接坐标，运行在 :9000，非 K8s 内部）
 apiVersion: v1
 kind: Secret
 metadata:
@@ -54,7 +54,7 @@ stringData:
 - 包管理：Helm 3（chart apiVersion v2），复用现有仓库约定（Chart.yaml + values.yaml + templates/）
 - 编排：Kubernetes StatefulSet（有状态：pageserver/safekeeper）、Deployment（无状态：control-plane/broker/controller/compute）；**proxy 为 phase-2 可选（Deployment，默认不部署）**
 - 存储：PVC + StorageClass（pageserver/safekeeper 本地盘；WAL/层数据持久化在 PVC）
-- 对象存储：外部 MinIO（S3 兼容，运行在 K8s 之外，凭证由 `bucket-credentials` Secret 提供），不内建对象存储 chart
+- 对象存储：外部 MinIO（S3 兼容，运行在 K8s 之外），**连接坐标与凭证统一由 `bucket-credentials` Secret 提供（唯一事实来源，values 中不保留副本）**，不内建对象存储 chart
 - 监控：Prometheus Operator ServiceMonitor（复用现有 values 中的 metrics 开关）
 - 模板语言：Go template（与现有 chart 一致），_helpers.tpl 复用命名约定
 
@@ -66,7 +66,7 @@ stringData:
 
 - 有状态组件（pageserver/safekeeper）用 StatefulSet + PVC，保证 Pod 重建后数据不丢失、网络标识稳定（稳定的 DNS）。
 - 控制面（`neon-control-plane`）是一个**常驻最小服务**：服务内部聚合了 bootstrap 逻辑与精简用户 API。它在启动时幂等地调用 storage-controller 的 `/control/v1/node`、`/control/v1/safekeeper`、`/control/v1/tenant` 完成节点注册与租户/时间线创建；运行时对外提供 `POST /projects`、`POST /projects/{id}/branches`、`POST /projects/{id}/endpoints` 等核心 API，并经 storage-controller 完成 pageserver/safekeeper 调度。参考 neon 源码 `control_plane`（即 `neon_local`，本地开发编排工具，**非生产控制面**）的实际调用路径与 `storage_controller/src/http.rs` 的 `/control/v1/*` REST 接口。
-- 存储后端为外部 MinIO（S3 兼容），凭证由 `bucket-credentials` Secret 提供，chart 通过 values 透传 endpoint/bucket/region/密钥，不内建对象存储。
+- 存储后端为外部 MinIO（S3 兼容），存储后端的连接坐标（bucket / region / endpoint）与凭证**统一由 `bucket-credentials` Secret 提供**，chart 只引用该 Secret、不内建对象存储。pageserver 的 `remote_storage` 无环境变量覆盖机制，坐标只能由 init 容器在 Pod 启动时从该 Secret 读出后写入 `pageserver.toml`；因此在 values 中保留 endpoint/bucket/region 副本会造成两处漂移（且漂移不会被任何校验捕获），已彻底移除。
 - compute（计算节点）**仅**由 control plane 在创建 endpoint 时**动态拉起**：control plane 生成 `ComputeSpec` 并通过 in-cluster K8s API 为 endpoint 创建一个 compute Deployment（`compute_ctl` 从 control plane 拉取 spec）。umbrella 不再内置静态 `neon-compute` chart（该 chart 已移除），集群内不存在预部署的默认 compute。
 
 ### 关键技术决策
@@ -83,8 +83,17 @@ stringData:
    - **SC 不连接 storage_broker**（无 `--broker-endpoint` 参数）；safekeeper/pageserver 各自连接 broker 做节点发现。
    - pageserver/safekeeper 侧挂载**同一公钥**（pageserver 用 `auth_validation_public_key_path` + `http_auth_type/pg_auth_type=NeonJWT`；safekeeper 用 `--pg-auth-public-key-path`）校验 SC 与 compute 的 token。
    - `neon-control-plane` 持有**私钥**，按目标路径 scope 现签 token（见 Bootstrap 段），并为 compute 签发 `storage_auth_token`。
-   用独立 Secret（`global.jwtSecretName`）统一管理私钥 + 公钥，各 chart 挂载引用。
-4. **umbrella 编排**：总 chart 用 dependencies 声明子 chart 与条件（condition），通过全局 values 透传（如 global.objectStorage、global.jwtSecretName、global.region），解决组件间配置耦合。
+   用**单个外部预建的 Secret**（`global.jwt.existingSecret`，默认名 `neon-jwt`）统一管理私钥 + 公钥 + 各 scope token，各 chart 挂载引用。
+   chart **不创建**该 Secret、也不接收任何密钥明文，由仓库根目录的 `jwt.py` 生成后 `kubectl apply`
+   （或交给 SOPS / Sealed Secrets / External Secrets 管理）。
+   消费方式遵循最小权限：
+   - control-plane：只投影 `privateKey.pem` + `publicKey.pem`（唯一持有私钥者）；
+   - pageserver：只投影 `publicKey.pem` + `generationsApiJwtToken`（后者由 init 容器写入 `pageserver.toml`，
+     因为 `control_plane_api_token` 仅支持 TOML 内联，不能进 ConfigMap）；
+   - safekeeper：主容器只投影 `publicKey.pem`，注册 sidecar 另挂一个只投影 `peerJwtToken` 的卷；
+   - storage-controller：通过 `env.secretKeyRef` 逐键注入 `PUBLIC_KEY` 与各 `*_JWT_TOKEN`。
+   绝不能把整个 Secret 挂进容器——那会把 `privateKey.pem` 暴露给 pageserver / safekeeper。
+4. **umbrella 编排**：总 chart 用 dependencies 声明子 chart 与条件（condition），通过全局 values 透传（如 global.objectStorage、global.jwt.existingSecret、global.region），解决组件间配置耦合。
 
 ### Control Plane 详细设计（基于 neon 源码深度调研）
 
@@ -206,7 +215,7 @@ tenant / timeline 一律由 `POST /projects` 按需创建（每个 project 独�
 #### 技术实现要点
 
 - **语言/镜像（已确认）**：用 **Go** 实现一个轻量 HTTP 服务（`net/http` + 轻量路由即可，无需框架），自带镜像构建流水线（`Dockerfile` + `src/main.go`），chart 仅通过 `image` 引用镜像。需访问 K8s API（为每个 endpoint 创建 compute Deployment/Service）→ 配 RBAC ServiceAccount + ClusterRole（`pods`/`deployments`/`services` 的 `create`/`delete`/`get`/`list`/`watch`，限定在自身 namespace）。
-- **JWT 复用**：control plane 持有与 pageserver/safekeeper 同一套 Ed25519 私钥（`global.jwtSecretName`，Secret 挂载到 Pod），用于签发 compute 的 `storage_auth_token`；公钥已由各 chart 挂载到 pageserver/safekeeper。proxy→control-plane 的调用可复用同一 JWT 或由 proxy 配置专用 JWT，control plane 侧做最小校验（v1 可宽松放行，后续用 JWT 鉴权）。
+- **JWT 复用**：control plane 持有与 pageserver/safekeeper 同一套 Ed25519 私钥（`global.jwt.existingSecret` 指向的外部 Secret，只投影 `privateKey.pem` + `publicKey.pem` 挂载到 Pod），用于签发 compute 的 `storage_auth_token`；公钥已由各 chart 挂载到 pageserver/safekeeper。proxy→control-plane 的调用可复用同一 JWT 或由 proxy 配置专用 JWT，control plane 侧做最小校验（v1 可宽松放行，后续用 JWT 鉴权）。
 - **SCRAM 角色密钥自管**：control plane 在创建 endpoint 时生成 SCRAM-SHA-256 验证器（见上"Endpoint 创建"第 4 步），既写入 ComputeSpec 又作为 `role_secret` 返回，保证 proxy 与 compute 密码一致。角色名默认 `cloud_admin`、库 `postgres`。
 - **不实现完整 Console**：不做用户/组织/计费/鉴权体系；用户 API 仅保留 project/branch/endpoint 几个核心，字段做最小集（对齐 v2.json 的 `projects`/`branches`/`endpoints` 资源形状，但只实现 create/list/get/delete）。
 - **state 持久化（最优方案 A+B：in-memory + ConfigMap）**：运行时真相源为内存 `RwLock<State>`（承接所有读/复杂查询，零 etcd 开销），持久化层为 K8s `ConfigMap`（`neon-cp-state`）JSON 快照，采用 **write-through + 去抖**（如 500ms~2s 合并刷新，规避 ConfigMap 整对象重写放大）落盘。要点：
@@ -339,7 +348,9 @@ graph TD
 
 **外部 PostgreSQL（仅 storage-controller 元数据后端，控制面不依赖）**：storage-controller 是控制面调度核心，但其全部元数据（节点注册、租户/分片位置、调度状态、attachment 服务状态）**不自带存储**，必须持久化到**外部 PostgreSQL**（即其必填启动参数 `--database-url`）。因此部署前需先准备一个可用的 PostgreSQL 实例/集群，并满足：
 - 数据库由 `storage-controller-pg-cluster` Secret 提供连接串（`postgres://<user>:<pass>@<host>:5432/storage_controller` 形式），storage-controller 启动时自动建表/迁移（内置 migration，无 neon 定制扩展依赖，见 `storage_controller/src/persistence.rs`）。
-- 该 PostgreSQL **必须先于** storage-controller 就绪（umbrella 中将其列为前置依赖，或在 values 中指定 `externalPostgres.existingSecret` 指向既有实例）。
+- 落地口径（最终实现，替代早期 `externalPostgres.existingSecret` 提法）：chart **不接收明文连接串**，只引用外部 Secret，取值链为 `neon-storage-controller.settings.databaseUrlSecretName` > `global.storageController.databaseUrl.existingSecret`，键名由 `...databaseUrlSecretKey` 指定、默认 `uri`；两者皆空时渲染阶段 `fail`。注入方式为 `env.secretKeyRef → DATABASE_URL`（`storage_controller` 只认 `--database-url` 或 `DATABASE_URL`，不支持文件）。
+- 该 PostgreSQL **必须先于** storage-controller 就绪（umbrella 中将其列为前置依赖，Secret 可用 External Secrets Operator / SOPS / Sealed Secrets 供给）。
+- 连接串轮换与 Helm 解耦：只更新 Secret 再 `kubectl rollout restart deploy/<release>-storage-controller` 即可，无需 `helm upgrade`（env 注入不会热更新，故必须重启）。
 - **控制面（`neon-control-plane`）不使用 PostgreSQL**：其状态采用「in-memory + ConfigMap」持久化（见 1.4 节「服务内部状态」），无需任何外部 DB 依赖。若未来演进为功能完整的 console 需要关系型存储，再考虑在**同一 PostgreSQL 实例上建独立 `control_plane` 库（同实例异库，绝不混用 `storage_controller` 库/表）**——以隔离 SC 的 migration 主权、避免 `__diesel_schema_migrations` 冲突，并隔离故障域（重置控制面可 `DROP DATABASE control_plane` 而不误伤 SC）。
 - 职责区分：外部 PostgreSQL **仅服务 storage-controller**；实际页面层/WAL 数据落在外部 MinIO（高吞吐对象存储）。两者不可混淆，MinIO 不能替代 PostgreSQL。
 - 生产环境建议 PostgreSQL 启用主从/HA 与定期备份；若集群已有 PostgreSQL Operator（如 CloudNativePG），可直接复用其 Service 地址。
@@ -352,16 +363,16 @@ graph TD
 charts/
 ├── neon/                                  # [NEW] umbrella 总 chart
 │   ├── Chart.yaml                         # [NEW] 声明所有子 chart 依赖与全局版本（neon-proxy 以 condition 默认 false 不启用）
-│   ├── values.yaml                        # [NEW] 全局 values（global.objectStorage/region/jwtSecretName 及子 chart 透传）
+│   ├── values.yaml                        # [NEW] 全局 values（global.storage.bucket.existingSecret / global.storageController.databaseUrl / global.jwt.existingSecret 及子 chart 透传）
 │   └── charts/                            # [NEW] 内联子 chart 依赖（或依赖外部 repo）
 ├── neon-pageserver/                       # [NEW] pageserver 有状态 chart
 │   ├── Chart.yaml                         # [NEW] apiVersion v2，appVersion 对齐 neon 镜像
-│   ├── values.yaml                        # [NEW] image/StatefulSet/replicas/StorageClass/PVC/resources/metrics/settings(brokerEndpoint, jwt, storage)
+│   ├── values.yaml                        # [NEW] image/StatefulSet/replicas/StorageClass/PVC/resources/metrics/settings(brokerEndpoint, storageControllerUrl, jwtSecretName, remoteStorage.existingSecret/keys/prefixInBucket)
 │   ├── templates/
 │   │   ├── _helpers.tpl                   # [NEW] 复用命名约定
 │   │   ├── statefulset.yaml               # [NEW] StatefulSet+volumeClaimTemplates+probe+PDB+config 挂载
 │   │   ├── service.yaml                   # [NEW] Headless + ClusterIP
-│   │   ├── configmap.yaml                 # [NEW] 渲染 pageserver.toml（存储后端/端口/JWT/broker）
+│   │   ├── configmap.yaml                 # [NEW] 渲染 pageserver.toml 模板（端口/JWT/broker，不含 remote_storage：存储后端由 init 从 Secret 追加）
 │   │   ├── pod-disruption-budget.yaml     # [NEW] PDB
 │   │   ├── serviceaccount.yaml            # [NEW] RBAC/SA
 │   │   └── servicemonitor.yaml            # [NEW] 可选 ServiceMonitor
@@ -408,6 +419,9 @@ listen_http_addr = "0.0.0.0:9898"                  # HTTP 管理 API（SC 调用
 broker_endpoint  = "http://<storage-broker>:50051" # storage_broker（WAL 流节点发现）
 
 # 对象存储后端：内联表，字段名已核对 → bucket_region（非 region）
+# 注意：本行**不在 ConfigMap 模板中**，由 init-identity 容器在 Pod 启动时
+# 从 bucket-credentials Secret 读出坐标后追加（唯一事实来源是 Secret，values 中无副本）。
+# endpoint 可省略（省略即走 AWS S3 官方 endpoint）；prefix_in_bucket 来自 values。
 remote_storage = { bucket_name = "<neon-bucket>", bucket_region = "<region>",
                    endpoint = "<s3-or-minio-endpoint>", prefix_in_bucket = "pageserver" }
 

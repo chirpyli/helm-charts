@@ -7,7 +7,12 @@ metadata:
   name: neon
 
 ---
-#  MinIO S3 凭证
+# MinIO / S3 —— 对象存储的**唯一事实来源**
+# 既提供凭证（AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY），也提供连接坐标
+# （BUCKET_NAME / AWS_REGION / AWS_ENDPOINT_URL）。
+# 坐标不再通过 values 传递：pageserver 的 remote_storage 无环境变量覆盖机制，
+# 由 init 容器在 Pod 启动时读出本 Secret 后写入 pageserver.toml。
+# endpoint 可留空（留空走 AWS S3 官方 endpoint）；BUCKET_NAME 与 AWS_REGION 必填非空。
 apiVersion: v1
 kind: Secret
 metadata:
@@ -21,7 +26,12 @@ stringData:
   BUCKET_NAME: "neondata"
 
 ---
-# 数据库连接
+# 数据库连接（storage-controller 元数据后端）
+# 由集群侧预建，chart 只"引用"：默认名 storage-controller-pg-cluster、默认键 uri，
+# 对应 global.storageController.databaseUrl.existingSecret / secretKey
+# （子 chart 独立部署时用 settings.databaseUrlSecretName / databaseUrlSecretKey）。
+# 轮换连接串后需 kubectl rollout restart deploy/<release>-storage-controller，
+# 因为 env 注入的 Secret 在运行期不会自动更新。
 apiVersion: v1
 kind: Secret
 metadata:

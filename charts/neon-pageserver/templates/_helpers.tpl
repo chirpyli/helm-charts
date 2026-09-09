@@ -112,3 +112,100 @@ if [ -z "${AZ}" ]; then
 fi
 echo "init-identity: 从节点 ${NODE_NAME} 探测到可用区 AZ=${AZ}"
 {{- end }}
+
+{{/*
+共享 JWT Secret 名称取值链。
+
+优先级（从高到低）：
+  1. settings.jwtSecretName      —— 子 chart 独立部署时显式指定
+  2. global.jwt.existingSecret   —— umbrella 部署时的主用入口，指向外部预建的 Secret
+  3. global.jwt.secretName       —— 历史兼容字段
+
+为什么必须把 settings.jwtSecretName 的默认值清空：
+  该值此前默认为 "neon-jwt"（非空）；`| default` 只在前值被判定为空时才回退，
+  恒为非空会让父级传入的 global.jwt.existingSecret 永远不生效（既有缺陷）。
+
+为什么用 dig + (default dict)：
+  子 chart 独立部署时 .Values.global 可能压根不存在，dig 遇到 nil 会直接报错，
+  用 default dict 兜底，保证独立部署场景不会因为模板报错而不可用。
+
+返回空串表示"未配置任何 JWT Secret"，调用方据此跳过 jwt 卷渲染。
+*/}}
+{{- define "neon-pageserver.jwtSecretName" -}}
+{{- .Values.settings.jwtSecretName | default (dig "jwt" "existingSecret" "" (.Values.global | default dict)) | default (dig "jwt" "secretName" "" (.Values.global | default dict)) -}}
+{{- end -}}
+
+{{/*
+对象存储 Secret 名称解析链（优先级从高到低）：
+  1. settings.remoteStorage.existingSecret   —— 子 chart 独立部署时显式指定
+  2. global.storage.bucket.existingSecret    —— umbrella 部署时的主用入口
+  3. "bucket-credentials"                    —— 兜底默认名，对齐 docs/ 中已发布的示例
+
+为什么默认名只能放在链条最后一级：
+  `| default` 只在前值被判定为空时才回退，把默认名放在第 1 级会让父级传入的值永远无法生效
+  （与 neon-pageserver.jwtSecretName 踩过的坑同源，见上方注释）。
+
+为什么每一层都要 `| default dict` 兜底：
+  子 chart 独立部署时 .Values.settings / .Values.global 可能压根不存在，
+  直接对其取字段或 dig 遇到 nil 会直接报模板错误，导致独立部署场景不可用。
+*/}}
+{{- define "neon-pageserver.bucketSecretName" -}}
+{{- $settings := (.Values.settings | default dict) -}}
+{{- $remoteStorage := ($settings.remoteStorage | default dict) -}}
+{{- $local := ($remoteStorage.existingSecret | default "") -}}
+{{- $globalValue := dig "storage" "bucket" "existingSecret" "" (.Values.global | default dict) -}}
+{{- $local | default $globalValue | default "bucket-credentials" -}}
+{{- end -}}
+
+{{/*
+对象存储 Secret 的键名映射：内置默认 ← global.storage.bucket.keys ← settings.remoteStorage.keys（后者覆盖前者）。
+
+为什么返回 YAML 文本而不是 dict：
+  Go template 的 include 只能返回字符串，无法直接返回 map；
+  因此这里 toYaml 序列化，调用侧用 `include ... | fromYaml` 还原成 dict（Helm 社区惯用法）。
+
+为什么用 mergeOverwrite 且先 deepCopy：
+  mergeOverwrite 会就地修改第一个参数，deepCopy 保证内置默认值不被本次渲染污染，
+  也让"只覆盖其中一两个键"成为可能（未列出的键自动回退到默认值）。
+*/}}
+{{- define "neon-pageserver.bucketSecretKeys" -}}
+{{- $defaults := dict "bucketName" "BUCKET_NAME" "region" "AWS_REGION" "endpoint" "AWS_ENDPOINT_URL" "accessKeyId" "AWS_ACCESS_KEY_ID" "secretAccessKey" "AWS_SECRET_ACCESS_KEY" -}}
+{{- $globalKeys := dig "storage" "bucket" "keys" dict (.Values.global | default dict) | default dict -}}
+{{- $settings := (.Values.settings | default dict) -}}
+{{- $localKeys := (($settings.remoteStorage | default dict).keys | default dict) -}}
+{{- toYaml (mergeOverwrite (deepCopy $defaults) $globalKeys $localKeys) -}}
+{{- end -}}
+
+{{/*
+桶内路径前缀。
+
+保留在 values 的原因：它是"多环境共享同一个桶时如何隔离数据"的布局参数，
+而不是"连哪个对象存储"的连接坐标，Secret 中也没有对应的键，不属于本次收敛范围。
+兜底 "pageserver" 与 values.yaml 中的默认值保持一致（用户显式留空时同样回退到该值）。
+*/}}
+{{- define "neon-pageserver.remoteStoragePrefix" -}}
+{{- $settings := (.Values.settings | default dict) -}}
+{{- (($settings.remoteStorage | default dict).prefixInBucket | default "pageserver") -}}
+{{- end -}}
+
+{{/*
+遗留键守卫：settings.remoteStorage.bucketName / bucketRegion / endpoint 已彻底移除。
+
+为什么必须主动 fail 而不是静默忽略：
+  这三个键此前是"坐标的唯一来源"，用户升级 chart 时若沿用旧 values，
+  新模板不会读取它们，配置会被静默丢弃 —— pageserver 会带着 Secret 里的另一套坐标启动，
+  表现为"改了 values 没生效"甚至数据写错桶。宁可在渲染阶段就报错并给出迁移指引。
+
+为什么用 (.Values.settings | default dict) 再取字段：
+  hasKey 遇到 nil 会直接报模板错误；用户若整个删掉 settings 块，这里必须安全跳过而不是崩渲染。
+*/}}
+{{- define "neon-pageserver.remoteStorageGuard" -}}
+{{- $root := . -}}
+{{- $settings := (.Values.settings | default dict) -}}
+{{- $remoteStorage := ($settings.remoteStorage | default dict) -}}
+{{- range $legacyKey := (list "bucketName" "bucketRegion" "endpoint") -}}
+{{- if hasKey $remoteStorage $legacyKey -}}
+{{- fail (printf "settings.remoteStorage.%s 已移除：对象存储连接坐标的唯一事实来源现在是 Secret（%s），values 中不再保留副本。请删除该键，并在 Secret 中补齐对应字段（BUCKET_NAME / AWS_REGION / AWS_ENDPOINT_URL），详见 charts/neon/templates/NOTES.txt。" $legacyKey (include "neon-pageserver.bucketSecretName" $root)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

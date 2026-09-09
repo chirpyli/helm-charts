@@ -1,18 +1,77 @@
 Neon 生产级部署已就绪（umbrella: {{ .Chart.Name }} / release: {{ .Release.Name }}）。
+共享 JWT Secret：{{ dig "jwt" "existingSecret" "" .Values.global }}（由外部预建，本 chart 不创建）
+PostgreSQL 连接串 Secret：{{ dig "storageController" "databaseUrl" "existingSecret" "" .Values.global }}（键 {{ dig "storageController" "databaseUrl" "secretKey" "" .Values.global | default "uri" }}，由外部预建，本 chart 不创建）
 
 部署前请确认以下外部依赖已就绪：
-  1. 外部 PostgreSQL（storage-controller 元数据后端）—— 通过 --set neon-storage-controller.settings.databaseUrl=... 提供
-  2. 外部 MinIO / S3 凭证 —— 在命名空间内创建名为 bucket-credentials 的 Secret（字段 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_ENDPOINT_URL / AWS_REGION / BUCKET_NAME），见 docs/plan.md 顶部示例
-  3. Ed25519 密钥对与 JWT —— 通过 --set global.jwt.publicKey=... global.jwt.privateKey=... 及各 scope token 提供（openssl genpkey -algorithm ed25519 生成；control-plane 用私钥签发，pageserver/safekeeper 用公钥校验）
+  1. 外部 PostgreSQL（storage-controller 元数据后端）—— 在命名空间内预建 Secret 提供连接串，
+     默认名 storage-controller-pg-cluster、默认键 uri（示例见 docs/neon.yaml），
+     再用 global.storageController.databaseUrl.existingSecret 引用它；
+     chart 不接受明文连接串，未配置会在渲染阶段报错
+  2. 外部 MinIO / S3 —— 在命名空间内创建名为 bucket-credentials 的 Secret，见 docs/neon.yaml 示例。
+     它是对象存储的**唯一事实来源**：既提供凭证（AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY），
+     也提供连接坐标（BUCKET_NAME / AWS_REGION / AWS_ENDPOINT_URL）。
+     坐标刻意不放 values：pageserver 的 remote_storage 没有环境变量覆盖机制
+     （上游 libs/remote_storage/src/s3_bucket.rs 中 Region 取 TOML 的 bucket_region、
+     endpoint 显式 .endpoint_url() 覆盖），只能由 init 容器在 Pod 启动时写入 pageserver.toml；
+     若 values 里再留一份副本，两处必然漂移且漂移不会被任何校验捕获 —— 改 Secret 毫无效果。
+     在 values 中保留 bucketName / bucketRegion / endpoint 会触发渲染期报错（含迁移指引）
+  3. Ed25519 密钥对与各 scope JWT —— 先用仓库根目录的 jwt.py 生成并 apply：
+       python3 jwt.py --namespace {{ .Release.Namespace }} --secret-name neon-jwt
+       kubectl apply -f jwt-out/neon-jwt.secret.yaml
+     然后通过 --set global.jwt.existingSecret=neon-jwt 引用它（必填，缺失会在渲染阶段报错）
+
+共享 JWT Secret 的键契约（jwt.py 与 chart 的唯一边界，勿改名）：
+  publicKey.pem            Ed25519 公钥 PEM —— pageserver / safekeeper / storage-controller / control-plane 校验签名
+  privateKey.pem           Ed25519 私钥 PEM —— 仅 control-plane 持有并用于签发
+  pageserverJwtToken       scope=pageserverapi   storage-controller → pageserver
+  safekeeperJwtToken       scope=safekeeperdata  pageserver → safekeeper（NEON_AUTH_TOKEN）、storage-controller
+  controlPlaneJwtToken     scope=controlplane    storage-controller → control-plane upcall
+  peerJwtToken             scope=admin           safekeeper 注册 sidecar、storage-controller 副本间通信
+  generationsApiJwtToken   scope=generations_api pageserver → storage-controller upcall（re-attach / validate）
+  computeJwtToken          scope=tenant          预留（当前无消费方，控制面持有私钥可自行签发）
 
 安装示例：
   helm dependency build charts/neon
+  python3 jwt.py --namespace neon --secret-name neon-jwt
+  kubectl apply -f jwt-out/neon-jwt.secret.yaml
+  kubectl apply -f docs/neon.yaml            # 或仅 apply 其中的 storage-controller-pg-cluster Secret
   helm install neon charts/neon -n neon --create-namespace \
-    --set neon-storage-controller.settings.databaseUrl='postgres://user:pass@<pg-host>:5432/storage_controller' \
-    --set-file global.jwt.publicKey=publicKey.pem \
-    --set-file global.jwt.privateKey=privateKey.pem \
-    --set global.jwt.pageserverJwtToken=<tok> --set global.jwt.safekeeperJwtToken=<tok> \
-    --set global.jwt.controlPlaneJwtToken=<tok> --set global.jwt.peerJwtToken=<tok>
+    --set global.storageController.databaseUrl.existingSecret=storage-controller-pg-cluster \
+    --set global.jwt.existingSecret=neon-jwt
+
+从旧版本升级（重要）：
+  旧版本由 chart 创建 neon-jwt Secret，本次起 chart 不再管理它，helm upgrade 会将其删除。
+  升级前请先导出旧 Secret 备份，再用 jwt.py 生成新 Secret 覆盖（或 kubectl apply 回备份）：
+    kubectl get secret neon-jwt -n neon -o yaml > neon-jwt.backup.yaml
+    python3 jwt.py --namespace neon --secret-name neon-jwt
+    kubectl apply -f jwt-out/neon-jwt.secret.yaml
+
+密钥轮换：
+  重新生成密钥对并重签全部 token 后 apply，再滚动重启所有组件
+  （pageserver 也可调用其 reload_auth_validation_keys 接口热加载公钥，无需重启）：
+    python3 jwt.py --namespace neon --secret-name neon-jwt
+    kubectl apply -f jwt-out/neon-jwt.secret.yaml
+    kubectl rollout restart sts,deploy -n neon
+
+PostgreSQL 连接串轮换：
+  连接串以 env（secretKeyRef）注入，Secret 更新不会反映到已运行的 Pod，必须显式滚动重启：
+    kubectl create secret generic storage-controller-pg-cluster -n neon --dry-run=client \
+      --from-literal=uri='postgres://user:newpass@<pg-host>:5432/storage_controller' -o yaml | kubectl apply -f -
+    kubectl rollout restart deploy/{{ .Release.Name }}-storage-controller -n {{ .Release.Namespace }}
+  说明：轮换无需 helm upgrade，这是把连接串移出 values 的主要收益之一。
+
+对象存储（坐标 + 凭证）轮换：
+  坐标与凭证同在 bucket-credentials Secret 中，改一次即原子生效，同样无需 helm upgrade。
+  但坐标以 Secret 文件投影、凭证以 env（secretKeyRef）注入，Secret 更新都不会反映到已运行的 Pod，
+  必须显式滚动重启 pageserver：
+    kubectl create secret generic bucket-credentials -n neon --dry-run=client \
+      --from-literal=BUCKET_NAME='neondata' --from-literal=AWS_REGION='us-east-1' \
+      --from-literal=AWS_ENDPOINT_URL='http://<minio-host>:9000' \
+      --from-literal=AWS_ACCESS_KEY_ID='...' --from-literal=AWS_SECRET_ACCESS_KEY='...' -o yaml | kubectl apply -f -
+    kubectl rollout restart sts/{{ .Release.Name }}-pageserver -n {{ .Release.Namespace }}
+  警告：换桶 / 换 endpoint 前请确认目标桶已是预期目标 —— pageserver 启动后会往新坐标写层文件，
+        旧桶数据不会被自动迁移，误填会导致租户分片读不到已有数据。
+  endpoint 允许留空：此时走 AWS S3 官方 endpoint（真 S3 + IRSA 场景）；MinIO 场景必须填。
 
 验证端到端：
   # 创建 project / branch / endpoint（控制面返回 ComputeSpec，并按需动态拉起 compute）

@@ -1,3 +1,18 @@
+{{- /*
+外部 PostgreSQL 连接串是 storage_controller 的必填项（见 storage_controller/src/main.rs
+的 Secrets::load：缺失即 anyhow::bail!("Database URL is not set")）。
+
+chart 不再提供 settings.databaseUrl 明文入口，只接受外部预建 Secret 的"引用"，
+因此这里做渲染期校验：未配置直接 fail，而不是放出一个必然 CrashLoopBackOff 的 Pod。
+注意 Helm 3 对 --set 传入的未定义 values 键只告警不报错，旧命令
+`--set neon-storage-controller.settings.databaseUrl=...` 会被静默忽略，
+正是靠这段 fail 兜底给出可读的错误提示。
+*/}}
+{{- $dbSecret := include "neon-storage-controller.databaseUrlSecretName" . }}
+{{- if not $dbSecret }}
+{{- fail "必须指定外部 PostgreSQL 连接串 Secret：请设置 neon-storage-controller.settings.databaseUrlSecretName，或 umbrella 的 global.storageController.databaseUrl.existingSecret；键名默认 uri（可用 settings.databaseUrlSecretKey 覆盖）。chart 已不再接受明文 settings.databaseUrl，Secret 需预先 kubectl apply（示例见 docs/neon.yaml 的 storage-controller-pg-cluster）。" }}
+{{- end }}
+{{- $dbSecretKey := include "neon-storage-controller.databaseUrlSecretKey" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -58,9 +73,9 @@ spec:
           # 注意：publicKey 不能以内联命令行参数传入。
           # 若用 toJson 内联多行 PEM，换行会被转义成字面量 "\n"，导致 storage_controller
           # 的 JwtAuth::from_key 解析失败（InvalidKeyFormat）。
-          # 正确做法：通过 secrets.yaml 将其以 PUBLIC_KEY 环境变量从 Secret 注入，
-          # K8s 注入环境变量时会保留 PEM 的真实换行符，二进制即可正确解析。
-          # 因此此处不再传 --public-key，改由 envFrom 的 PUBLIC_KEY 环境变量提供。
+          # 正确做法：以 PUBLIC_KEY 环境变量从 Secret 注入 —— K8s 注入环境变量时会保留
+          # PEM 的真实换行符，二进制即可正确解析。
+          # 因此此处不传 --public-key，改由下方 env 中的 secretKeyRef 提供。
           */}}
           {{- if .Values.settings.controlPlaneUrl }}
             - --control-plane-url
@@ -187,6 +202,20 @@ spec:
             - {{ .Values.settings.neonCloud | quote }}
           {{- end }}
           env:
+            {{- /*
+            外部 PostgreSQL 连接串：只注入"引用"，Secret 由集群侧预建并独立轮换。
+            env 中的变量优先于 envFrom 的同名变量；本 chart 已不再使用 envFrom 整包注入，
+            避免后续往 Secret 加键时静默多注入环境变量。
+            注意：env 注入的变量在 Pod 运行期不会随 Secret 更新而变化，
+            轮换连接串后需执行 kubectl rollout restart（见 charts/neon/templates/NOTES.txt）。
+            这里不使用 optional: true —— Secret 缺失时 Pod 停在 CreateContainerConfigError
+            并给出明确原因，符合 fail fast。
+            */}}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $dbSecret }}
+                  key: {{ $dbSecretKey }}
             - name: RUST_LOG
               value: "INFO"
             - name: RUST_BACKTRACE
@@ -195,6 +224,44 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            {{- /*
+            从共享 JWT Secret 直接注入公钥与各 scope token。
+            storage_controller 只支持从 CLI 参数或环境变量读取密钥
+            （见 storage_controller/src/main.rs 的 Secrets::load_secret），
+            环境变量由 K8s 以 secretKeyRef 解析，因此这里只出现"引用"而非明文：
+              - Helm release 中不含任何 token；
+              - Pod spec 中只出现 Secret 名称与键名。
+            未配置共享 Secret 时（子 chart 独立部署场景）整段跳过，退化为无认证启动。
+            */}}
+            {{- $jwtSecret := include "neon-storage-controller.jwtSecretName" . }}
+            {{- if $jwtSecret }}
+            # 校验入站请求签名用；多行 PEM 经环境变量注入可保留真实换行
+            - name: PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $jwtSecret }}
+                  key: publicKey.pem
+            - name: PAGESERVER_JWT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $jwtSecret }}
+                  key: pageserverJwtToken
+            - name: SAFEKEEPER_JWT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $jwtSecret }}
+                  key: safekeeperJwtToken
+            - name: CONTROL_PLANE_JWT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $jwtSecret }}
+                  key: controlPlaneJwtToken
+            - name: PEER_JWT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $jwtSecret }}
+                  key: peerJwtToken
+            {{- end }}
           {{- if .Values.settings }}
             {{- with .Values.settings.sentryUrl }}
             - name: SENTRY_DSN
@@ -209,9 +276,6 @@ spec:
               value: {{ . | toJson | quote }}
             {{- end }}
           {{- end }}
-          envFrom:
-          - secretRef:
-              name: {{ include "neon-storage-controller.fullname" . }}-env-vars
           ports:
             - name: controller
               containerPort: {{ .Values.service.port }}

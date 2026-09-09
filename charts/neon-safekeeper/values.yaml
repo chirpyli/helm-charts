@@ -18,13 +18,16 @@ settings:
   brokerEndpoint: "http://neon-broker-svc:50051"
   # -- storage_controller 地址（注册 sidecar 通过此地址向 SC 注册/激活/注销节点）
   storageControllerUrl: "http://neon-storage-controller-svc:50051"
-  # -- admin scope JWT token（注册 sidecar 通过此 token 调用 SC API，对应 peerJwtToken）
-  adminToken: ""
+  # 注意：注册 sidecar 使用的 admin scope token（peerJwtToken）不再通过此文件填写，
+  # 改由 sidecar 从挂载的共享 JWT Secret 文件中读取，避免明文落进 Pod spec 的 command 脚本
+  # （pod spec 对多数运维角色可读，且会进入审计日志）。
   # Pod 启动时由 init 容器通过 kube-apiserver 读取所在节点的 topology.kubernetes.io/zone 标签动态获取，
   # 主容器的 --availability-zone 与注册 sidecar 上报的 availability_zone_id 均使用该探测值。
   # 节点缺少该标签时 Pod 会停在 Init 状态并报错退出（不会带空/错误的 AZ 注册）。
-  # -- 共享 JWT 公钥 Secret 名称（safekeeper 用其校验 compute/pageserver 的 WAL 连接 token）
-  jwtSecretName: "neon-jwt"
+  # -- 共享 JWT Secret 名称（外部预建，键契约见 charts/neon/templates/NOTES.txt）。
+  # 留空时回退 global.jwt.existingSecret > global.jwt.secretName；三者皆空表示不使用 JWT。
+  # 默认值必须保持空串：非空会让父级传入的 existingSecret 永远无法生效。
+  jwtSecretName: ""
 
 # 注册 sidecar：
 # 每个 safekeeper pod 附带一个轻量 sidecar，负责本节点的注册/激活/对账/注销，
@@ -97,6 +100,21 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 priorityClassName: ""
+
+# Pod 反亲和（节点级打散）：强制开启，恒为硬约束，不可关闭、不可降级为软约束。
+# 背景：safekeeper 通过 WAL 多数派保证数据可靠（默认 3 副本，容忍 1 副本失效）。
+# 若多个 safekeeper 副本被调度到同一个 k8s 节点：
+#   1) 该节点宕机会同时失效多个副本，直接破坏多数派，时间线无法提交 WAL；
+#   2) 单机磁盘故障会同时损坏多个副本的 WAL 存储；
+#   3) 副本间争抢同一节点的 CPU / 内存 / 磁盘 IO。
+# 因此固定渲染 requiredDuringSchedulingIgnoredDuringExecution，
+# 保证副本数与节点数一一对应，多数派才真正有效。
+# 注意：硬约束要求 可调度节点数 >= 副本数（默认 3 副本需至少 3 个可调度节点），
+#       否则 Pod 将长期 Pending；节点不足时应扩容节点或调小 statefulSet.replicas（没有降级开关）。
+podAntiAffinity:
+  # -- 拓扑域：kubernetes.io/hostname = 按 k8s 节点打散（默认，满足“一个节点一个副本”）；
+  # fixme: 生产环境还需要分布在不同的可用区
+  topologyKey: "kubernetes.io/hostname"
 
 metrics:
   enabled: false

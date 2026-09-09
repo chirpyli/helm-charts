@@ -1,3 +1,19 @@
+{{/*
+共享 JWT Secret 名称：取值链见 _helpers.tpl 的 neon-pageserver.jwtSecretName。
+提前求值并在本文件多处复用（init 挂载、主容器 env、jwt 卷定义）。
+*/}}
+{{- $jwtSecret := include "neon-pageserver.jwtSecretName" . -}}
+{{/*
+对象存储：坐标与凭证的唯一事实来源是 Secret，本文件只解析"引用"（Secret 名 + 键名映射 + 路径前缀），
+不含任何明文坐标值。取值链见 _helpers.tpl 的 neon-pageserver.bucketSecretName / bucketSecretKeys。
+
+先执行遗留键守卫：values 里若还留着 bucketName / bucketRegion / endpoint，
+新模板已不再读取它们，配置会被静默丢弃，必须在渲染阶段就 fail 并给出迁移指引。
+*/}}
+{{- include "neon-pageserver.remoteStorageGuard" . -}}
+{{- $bucketSecret := include "neon-pageserver.bucketSecretName" . -}}
+{{- $bucketKeys := include "neon-pageserver.bucketSecretKeys" . | fromYaml -}}
+{{- $bucketPrefix := include "neon-pageserver.remoteStoragePrefix" . -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -51,6 +67,65 @@ spec:
               printf 'availability_zone = "%s"\n' "${AZ}" >> /home/postgres/pageserver/pageserver.toml
               echo "init-identity: wrote pageserver.toml with availability_zone=${AZ}"
 
+              # 3) 追加 PS→SC upcall 的 JWT（必须是 generations_api scope）。
+              #    为什么在这里写：pageserver 的 control_plane_api_token 只支持 TOML 内联，
+              #    而 ConfigMap 一旦内联就会把 token 明文暴露给所有可读 ConfigMap 的主体。
+              #    这里从只读挂载的共享 JWT Secret 读出后追加，token 只存在于容器内的文件中。
+              #    [ -s ] 判断键是否存在且非空：子 chart 独立部署且未配置 JWT 时，
+              #    该卷根本不会挂载，此时跳过注入而不是写入空值把 upcall 变成 401。
+              if [ -s /etc/neon/jwt/generationsApiJwtToken ]; then
+                printf 'control_plane_api_token = "%s"\n' "$(cat /etc/neon/jwt/generationsApiJwtToken)" >> /home/postgres/pageserver/pageserver.toml
+                echo "init-identity: injected control_plane_api_token from JWT secret"
+              else
+                echo "init-identity: WARN - 未找到 generationsApiJwtToken，跳过 control_plane_api_token 注入（PS→SC upcall 将返回 401）"
+              fi
+
+              # 4) 追加对象存储 remote_storage。
+              #    坐标（bucket / region / endpoint）的唯一事实来源是 bucket-credentials Secret：
+              #    pageserver 的 remote_storage 只能从 pageserver.toml 读取，没有环境变量覆盖机制
+              #    （上游 libs/remote_storage/src/s3_bucket.rs 里 Region 取 bucket_region、
+              #    endpoint 显式 .endpoint_url() 覆盖），所以必须在这里写进 TOML，
+              #    注入 AWS_REGION / AWS_ENDPOINT_URL 之类的环境变量是无效的。
+              #    以只读文件投影方式读取（只投影三个坐标键，凭证不进 init 容器）。
+              BKT=$(cat /etc/neon/bucket/bucketName 2>/dev/null || true)
+              RGN=$(cat /etc/neon/bucket/region 2>/dev/null || true)
+              EP=$(cat /etc/neon/bucket/endpoint 2>/dev/null || true)
+              # 必填性校验：缺键或值为空一律 FATAL，宁可 Pod 停在 Init 状态，
+              # 也不能带着指向错误桶 / 空桶名的配置启动（那会导致数据写到错误位置）。
+              if [ -z "${BKT}" ]; then
+                echo "FATAL: Secret {{ $bucketSecret }} 缺少键 {{ $bucketKeys.bucketName }}（或值为空），无法确定对象存储桶名"
+                echo "       请检查该 Secret 是否已创建且键名正确（可用 settings.remoteStorage.keys 覆盖键名）"
+                exit 1
+              fi
+              if [ -z "${RGN}" ]; then
+                echo "FATAL: Secret {{ $bucketSecret }} 缺少键 {{ $bucketKeys.region }}（或值为空），无法确定对象存储地域"
+                echo "       请检查该 Secret 是否已创建且键名正确（可用 settings.remoteStorage.keys 覆盖键名）"
+                exit 1
+              fi
+              # 防 TOML 注入：三个坐标值会被拼进 pageserver.toml 的字符串字面量，
+              # 值中若含引号 / 反斜杠 / 控制字符会破坏 TOML 结构，甚至注入出额外配置键，一律拒绝启动。
+              for V in "${BKT}" "${RGN}" "${EP}"; do
+                case "${V}" in
+                  *'"'*|*'\'*)
+                    echo "FATAL: 对象存储配置值含非法字符（引号或反斜杠）：${V}"
+                    exit 1
+                    ;;
+                esac
+                # tr -d '[:print:]' 删掉所有可打印字符，剩下的就是控制字符（含换行）；非空即非法
+                if [ -n "$(printf '%s' "${V}" | tr -d '[:print:]')" ]; then
+                  echo "FATAL: 对象存储配置值含控制字符（换行等），请检查 Secret {{ $bucketSecret }} 的内容"
+                  exit 1
+                fi
+              done
+              # endpoint 允许为空：上游 S3Config.endpoint 是 Option<String>，
+              # 省略即走 AWS S3 官方 endpoint（真 S3 + IRSA 场景）；MinIO / S3 兼容存储必须提供。
+              if [ -n "${EP}" ]; then
+                printf 'remote_storage = { bucket_name = "%s", bucket_region = "%s", endpoint = "%s", prefix_in_bucket = "%s" }\n' "${BKT}" "${RGN}" "${EP}" "{{ $bucketPrefix }}" >> /home/postgres/pageserver/pageserver.toml
+              else
+                printf 'remote_storage = { bucket_name = "%s", bucket_region = "%s", prefix_in_bucket = "%s" }\n' "${BKT}" "${RGN}" "{{ $bucketPrefix }}" >> /home/postgres/pageserver/pageserver.toml
+              fi
+              echo "init-identity: wrote remote_storage bucket=${BKT} region=${RGN} endpoint=${EP:-<AWS 官方 endpoint>} prefix={{ $bucketPrefix }}（不输出凭证）"
+
               ORD=$(echo "$POD_NAME" | awk -F- '{print $NF}')
               ID=$(( {{ .Values.statefulSet.nodeIdBase }} + ORD ))
               # 写入 identity.toml
@@ -98,6 +173,17 @@ spec:
             - name: config
               mountPath: /etc/neon/pageserver-template
               readOnly: true
+            # 对象存储连接坐标（只读）：只投影 bucket / region / endpoint 三个坐标键，
+            # 凭证键刻意不投影进 init 容器 —— init 只需要知道"连哪个桶"，遵循最小权限
+            - name: bucket
+              mountPath: /etc/neon/bucket
+              readOnly: true
+            {{- if $jwtSecret }}
+            # 共享 JWT Secret（只读）：init 容器从这里读取 generations_api token 并写入 pageserver.toml
+            - name: jwt
+              mountPath: /etc/neon/jwt
+              readOnly: true
+            {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
@@ -114,47 +200,41 @@ spec:
               value: "INFO"
             - name: RUST_BACKTRACE
               value: "1"
+            {{- if $jwtSecret }}
             # pageserver 连接 safekeeper 时使用的 JWT 认证 token (scope: safekeeperdata)
             # 若未设置，pageserver 不带 token 连接 safekeeper，safekeeper 会因
             # pg-auth-public-key-path 开启 JWT 验证而拒绝连接 (Protocol error: EOF during auth)
+            # 从共享 JWT Secret 直接引用：token 不进 Helm release、不进 Pod spec，
+            # `kubectl get pod -o yaml` 只能看到一个引用而非明文。
             - name: NEON_AUTH_TOKEN
-              # 用 dig 安全取值：独立部署（无 umbrella global.jwt）时返回空串而非 nil panic
-              value: {{ dig "jwt" "safekeeperJwtToken" "" .Values.global | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $jwtSecret }}
+                  key: safekeeperJwtToken
+            {{- end }}
             # pageserver 据此向 SC 上报本节点可达地址（POST /re-attach）
             - name: HADRON_NODE_IP_ADDRESS
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            # 外部对象存储凭证（由 bucket-credentials Secret 注入）
+            # 外部对象存储凭证（由对象存储 Secret 注入）。
+            # 注意：这里只注入凭证，不注入坐标 —— pageserver 的 remote_storage
+            # 没有环境变量覆盖机制，AWS_REGION / AWS_ENDPOINT_URL / AWS_BUCKET 对它完全无效
+            # （上游 Region 与 endpoint 都取自 pageserver.toml，见 s3_bucket.rs），
+            # 坐标已由 init-identity 写进 pageserver.toml。
+            # optional: true —— 使用 IRSA / WebIdentity / IMDSv2 时这两个键可以不存在，
+            # 上游 DefaultCredentialsChain 会自动走对应的凭证来源。
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
-                  name: bucket-credentials
-                  key: AWS_ACCESS_KEY_ID
+                  name: {{ $bucketSecret }}
+                  key: {{ $bucketKeys.accessKeyId }}
                   optional: true
             - name: AWS_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: bucket-credentials
-                  key: AWS_SECRET_ACCESS_KEY
-                  optional: true
-            - name: AWS_ENDPOINT_URL
-              valueFrom:
-                secretKeyRef:
-                  name: bucket-credentials
-                  key: AWS_ENDPOINT_URL
-                  optional: true
-            - name: AWS_REGION
-              valueFrom:
-                secretKeyRef:
-                  name: bucket-credentials
-                  key: AWS_REGION
-                  optional: true
-            - name: AWS_BUCKET
-              valueFrom:
-                secretKeyRef:
-                  name: bucket-credentials
-                  key: BUCKET_NAME
+                  name: {{ $bucketSecret }}
+                  key: {{ $bucketKeys.secretAccessKey }}
                   optional: true
             # pageserver 拉起时间线（initdb）与运行 postgres 子进程时，
             # 这些 PostgreSQL 二进制动态链接 libpq 等库；需将其 lib 目录加入
@@ -199,19 +279,70 @@ spec:
               mountPath: {{ .Values.statefulSet.storage.mountPath }}
             # 注意：pageserver.toml 不再从 ConfigMap 直接挂载（ConfigMap 子路径只读，无法写入运行期探测到的可用区），
             # 而是由 init-identity 基于 /etc/neon/pageserver-template 模板生成到工作目录（即 data 卷内）。
+            {{- if $jwtSecret }}
             # 共享 JWT 公钥（校验 SC / compute 的 token）
             - name: jwt
               mountPath: /etc/neon/jwt
               readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.statefulSet.resources | nindent 12 }}
+      {{- /*
+            Pod 反亲和：强制同一 StatefulSet 的多个 pageserver 副本调度到不同的 k8s 节点上。
+            该规则强制开启、恒为硬约束（requiredDuringSchedulingIgnoredDuringExecution），不可关闭也不可降级。
+
+            为什么必须跨节点：
+              1) pageserver 的 PVC 默认使用 local-path（hostPath 型）StorageClass，PV 绑定具体节点，
+                 同节点多副本会共享单机磁盘故障域；
+              2) 单节点宕机会同时打掉多个副本，导致其承载的租户分片同时不可用；
+              3) 避免副本间争抢同一节点的 CPU / 内存 / 磁盘 IO。
+
+            实现说明：
+              - matchLabels 复用 selectorLabels（与 StatefulSet spec.selector 同源），
+                只与“本实例、本组件”的 Pod 互斥，不会误伤 safekeeper 等其他组件；
+              - 内置硬规则先写入 $affinity，再用 mergeOverwrite 合并用户自定义的 .Values.affinity，
+                用户配置优先级更高（可覆盖内置规则），同时避免手写拼接产生重复的 podAntiAffinity 键。
+            */ -}}
+      {{- $term := dict "labelSelector" (dict "matchLabels" (fromYaml (include "neon-pageserver.selectorLabels" .))) "topologyKey" .Values.podAntiAffinity.topologyKey }}
+      {{- $affinity := dict "podAntiAffinity" (dict "requiredDuringSchedulingIgnoredDuringExecution" (list $term)) }}
+      {{- with mergeOverwrite (deepCopy $affinity) .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "neon-pageserver.fullname" . }}-config
+        # 对象存储：只把三个坐标键投影给 init 容器（凭证由主容器的 secretKeyRef 注入，
+        # 因为上游 DefaultCredentialsChain 只认环境变量 / 凭证文件 / IMDS）。
+        # 固定 path 让 init 脚本的读取路径与 Secret 中的键名解耦，键名可配置也不影响脚本。
+        # optional: true —— Secret 尚未创建时 Pod 仍能进入 Init，
+        # 由脚本打印可读的中文 FATAL，而不是停在一个信息不直观的 MountError 上。
+        - name: bucket
+          secret:
+            secretName: {{ $bucketSecret }}
+            optional: true
+            items:
+              - key: {{ $bucketKeys.bucketName }}
+                path: bucketName
+              - key: {{ $bucketKeys.region }}
+                path: region
+              - key: {{ $bucketKeys.endpoint }}
+                path: endpoint
+        {{- if $jwtSecret }}
         - name: jwt
           secret:
-            secretName: {{ .Values.settings.jwtSecretName | default (dig "jwt" "secretName" "" .Values.global) }}
+            secretName: {{ $jwtSecret }}
+            # 投影白名单：共享 Secret 里同时存有 privateKey.pem，
+            # 若直接挂整个 Secret，pageserver 容器内就会出现本不该接触的签发私钥。
+            # 这里只投影校验公钥与 upcall token 两个键，遵循最小权限。
+            # （引用了不存在的键时 Pod 会停在 ContainerCreating，等价于强校验。）
+            items:
+              - key: publicKey.pem
+                path: publicKey.pem
+              - key: generationsApiJwtToken
+                path: generationsApiJwtToken
+        {{- end }}
   # 持久卷模板：Pod 重建后数据不丢失、且与 Pod 绑定
   volumeClaimTemplates:
     - metadata:

@@ -1,27 +1,33 @@
 
-# 共享 JWT 密钥 Secret 名称（umbrella 创建，供 pageserver/safekeeper/control-plane 挂载）
-jwtSecretName: "neon-jwt"
-
 # -- 全局配置（自动注入到各子 chart 的 .Values.global）
 global:
   region: "local"
   jwt:
-    # 已有 Secret 名称；若设置则不新建（与 jwtSecretName 取值应一致）
-    existingSecret: ""
-    # 共享 Secret 名称（与顶层 jwtSecretName 一致）
-    secretName: "neon-jwt"
-    # -- Ed25519 公钥（PEM，含 -----BEGIN PUBLIC KEY-----）
-    publicKey: ""
-    # -- Ed25519 私钥（PEM，含 -----BEGIN PRIVATE KEY-----）
-    privateKey: ""
-    # -- 各 scope JWT（SC 校验签名用）
-    pageserverJwtToken: ""
-    safekeeperJwtToken: ""
-    controlPlaneJwtToken: ""
-    peerJwtToken: ""
-    computeJwtToken: ""
-    # -- pageserver → SC 的 upcall(re-attach/validate) 需要 generations_api scope
-    generationsApiJwtToken: ""
+    # -- 外部预建的共享 JWT Secret 名称
+    # 请先用仓库根目录的 jwt.py 生成并 apply：
+    #   python3 jwt.py --namespace <ns> --secret-name neon-jwt
+    #   kubectl apply -f jwt-out/neon-jwt.secret.yaml
+    # 需要密钥入库时，请把输出的 Secret YAML 交给 SOPS / Sealed Secrets / External Secrets 加密。
+    existingSecret: "neon-jwt"
+  # -- storage-controller 元数据后端（外部 PostgreSQL）的连接串 Secret。
+  # 与 global.jwt.existingSecret 同一套约定：chart 只"引用"、绝不持有明文，
+  # 连接串本身不进 values、不进 Helm release、不进渲染后的 manifest。
+  storageController:
+    databaseUrl:
+      # -- Secret 名称，示例见 docs/neon.yaml 的 storage-controller-pg-cluster
+      existingSecret: "storage-controller-pg-cluster"
+      # -- Secret 中存放连接串的键名（CloudNativePG / docs 示例均用 uri）
+      secretKey: "uri"
+  # -- 外部对象存储（MinIO / S3）：连接坐标与凭证的唯一事实来源。
+  # 与 global.jwt.existingSecret / global.storageController.databaseUrl 同一套约定：
+  # chart 只"引用"、绝不持有明文，坐标不进 values、不进 ConfigMap、不进 Helm release。
+  storage:
+    bucket:
+      # -- Secret 名称，示例见 docs/neon.yaml 的 bucket-credentials
+      existingSecret: "bucket-credentials"
+      # -- 键名映射（留空表示全部使用子 chart 的默认键名：
+      # BUCKET_NAME / AWS_REGION / AWS_ENDPOINT_URL / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY）
+      keys: {}
 
 # ---------------- 子 chart 透传 ----------------
 
@@ -46,8 +52,9 @@ neon-storage-controller:
       cpu: "1"
       memory: 512Mi
   settings:
-    # 外部 PostgreSQL 连接串（必填）：环境相关，不进 global，必须在此填写
-    databaseUrl: ""
+    # 注意：外部 PostgreSQL 连接串不再通过 settings.databaseUrl 明文传入。
+    # 改为 global.storageController.databaseUrl.existingSecret 引用外部 Secret，
+    # 子 chart 侧亦可用 neon-storage-controller.settings.databaseUrlSecretName 覆盖。
     # 严格模式下必填：指向 control plane 的 notify 端点基址（SC 启动即校验）
     controlPlaneUrl: "http://neon-control-plane-svc:8080"
 
@@ -68,15 +75,17 @@ neon-pageserver:
   settings:
     brokerEndpoint: "http://neon-broker-svc:50051"
     storageControllerUrl: "http://neon-storage-controller-svc:50051"
-    # control_plane_api_token（PS→SC upcall）需 generations_api scope，
-    # 由 global.jwt.generationsApiJwtToken 提供（无需在此重复填）
+    # control_plane_api_token（PS→SC upcall，需 generations_api scope）不再在此填写：
+    # 由 init 容器从共享 JWT Secret 的 generationsApiJwtToken 键读出后写入 pageserver.toml，
+    # 避免 token 明文落进 ConfigMap / Pod spec。
     # 注意：可用区（AZ）不再静态指定。pageserver 启动时由 init 容器读取所在节点的
     # topology.kubernetes.io/zone 标签动态获取，并写入 pageserver.toml 与 metadata.json。
     # 节点未打该标签时 Pod 会停在 Init 状态并报错退出（需先 kubectl label node <node> topology.kubernetes.io/zone=<az>）。
+    # 注意：bucketName / bucketRegion / endpoint 已移除（保留会触发渲染期 fail 守卫）。
+    # 对象存储的连接坐标与凭证统一由 global.storage.bucket.existingSecret 指向的 Secret 提供，
+    # 由 pageserver 的 init 容器在启动时写入 pageserver.toml 的 remote_storage。
+    # prefixInBucket 是布局参数（多环境共享同一桶时隔离路径），仍留在 values。
     remoteStorage:
-      bucketName: "neondata"
-      bucketRegion: "us-east-1"
-      endpoint: "http://192.168.232.128:9000"
       prefixInBucket: "pageserver"
 
 neon-safekeeper:
@@ -95,15 +104,9 @@ neon-safekeeper:
       size: 2Gi
   settings:
     brokerEndpoint: "http://neon-broker-svc:50051"
-    # 以下两项供 safekeeper 注册 sidecar 使用：
-    # storageControllerUrl/adminToken 均从 global.jwt 中自动继承
-    # 若需覆盖可在此显式填写
+    # storageControllerUrl 供 safekeeper 注册 sidecar 使用。
     storageControllerUrl: "http://neon-storage-controller-svc:50051"
-    adminToken: ""
-    # 注意：可用区（AZ）不再静态指定。safekeeper 启动时由 init 容器读取所在节点的
-    # topology.kubernetes.io/zone 标签动态获取，主容器 --availability-zone 与注册 sidecar
-    # 上报的 availability_zone_id 均使用该值。
-    # 节点未打该标签时 Pod 会停在 Init 状态并报错退出。
+
 
 neon-control-plane:
   enabled: true

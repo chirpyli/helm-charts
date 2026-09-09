@@ -1,3 +1,8 @@
+{{/*
+共享 JWT Secret 名称：取值链见 _helpers.tpl 的 neon-control-plane.jwtSecretName。
+控制面是唯一需要 privateKey.pem 的组件（持有私钥用于签发 token）。
+*/}}
+{{- $jwtSecret := include "neon-control-plane.jwtSecretName" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -77,18 +82,30 @@ spec:
             - name: config
               mountPath: /etc/neon/config.json
               subPath: config.json
+            {{- if $jwtSecret }}
             - name: jwt
               mountPath: /etc/neon/jwt
               readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
         - name: config
           configMap:
             name: {{ include "neon-control-plane.fullname" . }}-config
+        {{- if $jwtSecret }}
         - name: jwt
           secret:
-            secretName: {{ .Values.settings.jwtSecretName | default (dig "jwt" "secretName" "" .Values.global) }}
+            secretName: {{ $jwtSecret }}
+            # 投影白名单：控制面只需要公私钥两个键。
+            # 各 scope token 不投影进来 —— 控制面持有私钥即可按需签发，
+            # 不需要复用预生成的静态 token，也就不必把它们暴露给这个容器。
+            items:
+              - key: privateKey.pem
+                path: privateKey.pem
+              - key: publicKey.pem
+                path: publicKey.pem
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

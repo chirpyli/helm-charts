@@ -53,8 +53,7 @@ Kubernetes: `^1.18.x-x`
 | podLabels | object | `{}` | Additional labels for neon-storage-controller pods |
 | podSecurityContext | object | `{}` | neon-storage-controller's pods Security Context |
 | priorityClassName | string | `""` | Pod priority class |
-| registerControlPlane.controlPlaneJwtToken | string | `""` |  |
-| registerControlPlane.enable | bool | `false` |  |
+| registerControlPlane.enable | bool | `false` | 是否启用向 control plane 注册节点的 Job；启用时必须配置 `global.jwt.existingSecret`（token 从中读取） |
 | registerControlPlane.resources.limits.cpu | string | `"100m"` |  |
 | registerControlPlane.resources.limits.memory | string | `"128M"` |  |
 | registerControlPlane.resources.requests.cpu | string | `"100m"` |  |
@@ -78,14 +77,14 @@ Kubernetes: `^1.18.x-x`
 | settings.chaosSafekeeperInterval | string | `""` | Chaos testing for timeline safekeeper migration interval |
 | settings.checkTimelineDigestAcrossSmallShardSplits | bool | `false` | When set, in small (<20GB) shard splits trigger and wait for a reference timeline digest, then split, then trigger a post-digest and check that it equals the reference. |
 | settings.consistencyCheckInterval | string | `""` | Interval for the background consistency check |
-| settings.controlPlaneJwtToken | string | `""` |  |
 | settings.controlPlaneUrl | string | `""` | Base URL for control plane API endpoints (e.g., https://control-plane.example.com/storage/api/v1/) |
-| settings.databaseUrl | string | `""` |  |
+| settings.databaseUrlSecretKey | string | `"uri"` | 上述 Secret 中存放连接串的键名。 |
+| settings.databaseUrlSecretName | string | `""` | 外部 PostgreSQL 连接串所在的 Secret 名称（必填，chart 不创建它）。 |
 | settings.enableLocationUpdates | bool | `false` | When set, enable location_updates subsystem |
 | settings.heartbeatInterval | string | `""` | Period with which to send heartbeats to registered nodes. |
 | settings.initialSplitShards | string | `""` | Number of shards to use for initial tenant splits. |
 | settings.initialSplitThreshold | string | `""` | Size threshold in bytes for initial tenant splits. |
-| settings.jwtToken | string | `""` |  |
+| settings.jwtSecretName | string | `""` | 共享 JWT Secret 名称（公钥与各 scope token 由此以 secretKeyRef 注入；留空时回退 `global.jwt.existingSecret`） |
 | settings.lazyDrainsFills | string | `""` | If true, use lazy attaches for node drains and fills. |
 | settings.lbmManagementUrl | string | `""` | Base URL for control plane management API (e.g., https://control-plane.example.com:1000/) |
 | settings.lbmStorageUrl | string | `""` | Base URL for control plane storage API (e.g., https://control-plane.example.com:1002/storage/api/v1/) |
@@ -102,10 +101,7 @@ Kubernetes: `^1.18.x-x`
 | settings.pageserverAutoMigrationEnabled | bool | `false` | Whether to enable automatic pageserver tenant shard migrations |
 | settings.pageserverAutoMigrationMaxMigrationsPerDestination | string | `""` | Maximum number of concurrent migrations per destination node |
 | settings.pageserverAutoMigrationMaxShardSizeLimit | string | `""` | Maximum shard size limit for migration |
-| settings.peerJwtToken | string | `""` | JWT token for authentication with other storage controller instances |
 | settings.posthogConfig | object | `{}` | Posthog config |
-| settings.publicKey | string | `""` |  |
-| settings.safekeeperJwtToken | string | `""` | JWT token for authentication with safekeepers |
 | settings.sentryEnvironment | string | `"development"` | "development" or "production". It will be visible in sentry in order to filter issues |
 | settings.sentryUrl | string | `""` | url (will be converted into `SENTRY_DSN` environment variable) used by sentry to collect error/panic events in storage-controller |
 | settings.splitThreshold | string | `""` | Shard size threshold in bytes for automatically splitting shards.  Omit to disable auto-sharding (default) |

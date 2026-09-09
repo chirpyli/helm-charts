@@ -1,3 +1,8 @@
+{{/*
+共享 JWT Secret 名称：取值链见 _helpers.tpl 的 neon-safekeeper.jwtSecretName。
+提前求值并在本文件多处复用（主容器公钥卷、注册 sidecar 的 admin token 卷）。
+*/}}
+{{- $jwtSecret := include "neon-safekeeper.jwtSecretName" . -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -101,7 +106,10 @@ spec:
                 --advertise-pg "${ADVERTISE_ADDR}:{{ .Values.service.pgPort }}" \
                 --listen-http "0.0.0.0:{{ .Values.service.httpPort }}" \
                 --broker-endpoint "{{ .Values.settings.brokerEndpoint }}" \
+                {{- if $jwtSecret }}
+                # 启用 JWT 校验：公钥从共享 Secret 只读挂载（未配置 JWT 时整条参数不下发，safekeeper 退化为无认证）
                 --pg-auth-public-key-path /etc/neon/jwt/publicKey.pem \
+                {{- end }}
                 --availability-zone "${AZ}"
           env:
             - name: RUST_LOG
@@ -139,9 +147,12 @@ spec:
               mountPath: {{ .Values.statefulSet.storage.mountPath }}
             - name: node-id
               mountPath: /etc/neon
+            {{- if $jwtSecret }}
+            # 共享 JWT 公钥（校验 compute / pageserver 的 WAL 连接 token）
             - name: jwt
               mountPath: /etc/neon/jwt
               readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.statefulSet.resources | nindent 12 }}
       {{- if .Values.sidecar.enabled }}
@@ -174,6 +185,13 @@ spec:
             - name: node-id
               mountPath: /etc/neon
               readOnly: true
+            {{- if $jwtSecret }}
+            # 注册用的 admin scope token：只投影 peerJwtToken 一个键，
+            # 不复用主容器的 jwt 卷，避免同一个容器里同时出现公钥与调用凭据。
+            - name: jwt-register
+              mountPath: /etc/neon/jwt
+              readOnly: true
+            {{- end }}
           command:
             - sh
             - -c
@@ -190,7 +208,15 @@ spec:
 
               # SC 地址与 admin scope JWT（peerJwtToken，SC 的 check_permissions 允许 Admin 兜底）
               SC_URL="{{ .Values.settings.storageControllerUrl }}"
-              ADMIN_TOKEN="{{ .Values.settings.adminToken | default (dig "jwt" "peerJwtToken" "" .Values.global) }}"
+              # 从只读挂载的共享 JWT Secret 读取 admin token。
+              # 不能像以前那样把 token 内联进这段脚本：内联会让它出现在 Pod spec 的 command 里，
+              # `kubectl get pod -o yaml` 就能看到，还会落进审计日志与 GitOps 渲染产物。
+              ADMIN_TOKEN="$(cat /etc/neon/jwt/peerJwtToken 2>/dev/null || true)"
+              if [ -z "${ADMIN_TOKEN}" ]; then
+                echo "sk-register: FATAL - 无法读取 /etc/neon/jwt/peerJwtToken，拒绝以空 token 调用 SC"
+                sleep 3600
+                exit 1
+              fi
               HEADLESS_SVC="{{ include "neon-safekeeper.headlessServiceName" . }}"
               # pod 稳定 DNS = <pod-name>.<headless-svc>.<ns>.svc.cluster.local
               HOST="${POD_NAME}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
@@ -271,12 +297,47 @@ spec:
           resources:
             {{- toYaml .Values.sidecar.resources | nindent 14 }}
       {{- end }}
+      {{- /*
+            Pod 反亲和：强制同一 StatefulSet 的多个 safekeeper 副本调度到不同的 k8s 节点上。
+            该规则强制开启、恒为硬约束（requiredDuringSchedulingIgnoredDuringExecution），不可关闭也不可降级。
+
+            为什么必须跨节点：
+              1) safekeeper 依赖 WAL 多数派（默认 3 副本容忍 1 副本失效），只有副本分散在不同节点，
+                 单节点故障才不会同时打掉多个副本而破坏多数派；
+              2) 单机磁盘故障会同时损坏多个副本的 WAL 存储；
+              3) 避免副本间争抢同一节点的 CPU / 内存 / 磁盘 IO。
+
+            实现说明：
+              - matchLabels 复用 selectorLabels（与 StatefulSet spec.selector 同源），
+                只与“本实例、本组件”的 Pod 互斥，不会误伤 pageserver 等其他组件；
+              - 内置硬规则先写入 $affinity，再用 mergeOverwrite 合并用户自定义的 .Values.affinity，
+                用户配置优先级更高（可覆盖内置规则），同时避免手写拼接产生重复的 podAntiAffinity 键。
+            */ -}}
+      {{- $term := dict "labelSelector" (dict "matchLabels" (fromYaml (include "neon-safekeeper.selectorLabels" .))) "topologyKey" .Values.podAntiAffinity.topologyKey }}
+      {{- $affinity := dict "podAntiAffinity" (dict "requiredDuringSchedulingIgnoredDuringExecution" (list $term)) }}
+      {{- with mergeOverwrite (deepCopy $affinity) .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       volumes:
         - name: node-id
           emptyDir: {}
+        {{- if $jwtSecret }}
+        # 主容器用：只投影校验公钥，不投影任何 token 或私钥
         - name: jwt
           secret:
-            secretName: {{ .Values.settings.jwtSecretName | default (dig "jwt" "secretName" "" .Values.global) }}
+            secretName: {{ $jwtSecret }}
+            items:
+              - key: publicKey.pem
+                path: publicKey.pem
+        # 注册 sidecar 用：只投影 admin scope token
+        - name: jwt-register
+          secret:
+            secretName: {{ $jwtSecret }}
+            items:
+              - key: peerJwtToken
+                path: peerJwtToken
+        {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: data

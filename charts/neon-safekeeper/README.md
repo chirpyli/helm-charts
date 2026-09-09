@@ -108,6 +108,7 @@ Kubernetes: `^1.18.x-x`
 | nameOverride | string | `""` | 部分覆盖 fullname 模板 |
 | nodeSelector | object | `{}` | 节点选择 |
 | podAnnotations | object | `{}` | Pod 注解 |
+| podAntiAffinity.topologyKey | string | `"kubernetes.io/hostname"` | 节点级反亲和拓扑域（强制开启的硬约束，不可关闭）：kubernetes.io/hostname=按 k8s 节点打散（默认，一个节点一个副本）；topology.kubernetes.io/zone=按可用区打散 |
 | podDisruptionBudget.maxUnavailable | int | `1` | 最大不可用副本数 |
 | podDisruptionBudget.minAvailable | int | `2` | 最小可用副本数（3 副本下保持 WAL 多数派） |
 | podLabels | object | `{}` | Pod 额外标签 |
@@ -122,7 +123,10 @@ Kubernetes: `^1.18.x-x`
 | serviceAccount.create | bool | `true` | 是否创建 ServiceAccount |
 | serviceAccount.name | string | `""` | 显式指定 SA 名称 |
 | settings.brokerEndpoint | string | `"http://neon-broker-svc:50051"` | storage_broker 地址 |
-| settings.jwtSecretName | string | `"neon-jwt"` | 共享 JWT 公钥 Secret 名称 |
+| settings.jwtSecretName | string | `""` | 共享 JWT Secret 名称（外部预建；留空时回退 `global.jwt.existingSecret` > `global.jwt.secretName`，三者皆空则不带 `--pg-auth-public-key-path` 启动）。默认必须为空串，否则父级的 `existingSecret` 无法生效 |
+
+说明：注册 sidecar 使用的 admin scope token 不再由 values 提供，
+改为从共享 JWT Secret 的 `peerJwtToken` 键挂载读取，避免明文出现在 Pod spec 的 command 脚本中。
 | statefulSet.nodeIdBase | int | `2000` | node id 基址（每 pod id = base + ordinal） |
 | statefulSet.replicas | int | `3` | 副本数（奇数，满足 WAL 多数派；SC 要求 >= 3） |
 | statefulSet.resources.limits.cpu | string | `"200m"` | CPU 上限（测试环境；生产建议 >= 2） |

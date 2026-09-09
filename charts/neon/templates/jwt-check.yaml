@@ -1,0 +1,16 @@
+{{/*
+共享 JWT Secret 前置校验。
+
+背景：本 chart 不再创建 JWT Secret，也不再接收任何密钥 / token 明文，
+只通过 global.jwt.existingSecret 引用外部预建的 Secret（jwt.py / openssl / ESO 创建）。
+若该值为空，各子 chart 会静默跳过 jwt 卷挂载，最终 pageserver 报
+"Can't find auth_validation_public_key"、safekeeper 与 SC 以无认证方式启动，
+故障现象离根因很远，因此在渲染阶段直接 fail 并给出可执行的处置命令。
+
+取值链与子 chart 保持一致（settings 覆盖 > global）：
+settings 层不参与，umbrella 只认 global.jwt.existingSecret。
+*/}}
+{{- $jwtSecret := dig "jwt" "existingSecret" "" .Values.global -}}
+{{- if not $jwtSecret }}
+{{- fail "global.jwt.existingSecret 未设置：本 chart 不再创建 JWT Secret，请先用仓库根目录的 jwt.py 生成并 apply，例如：\n  python3 jwt.py --namespace <ns> --secret-name neon-jwt\n  kubectl apply -f jwt-out/neon-jwt.secret.yaml\n然后安装时指定：\n  --set global.jwt.existingSecret=neon-jwt" }}
+{{- end }}

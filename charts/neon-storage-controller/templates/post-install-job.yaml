@@ -62,9 +62,19 @@ spec:
           value: {{ .Values.registerControlPlane.cplane_url | quote }}
         - name: REGION_ID
           value: {{ .Values.registerControlPlane.region_id | quote }}
-        envFrom:
-        - secretRef:
-            name: {{ include "neon-storage-controller.fullname" . }}-registration-env-vars
+        {{- /*
+        调用 control plane 注册接口的 controlplane scope token。
+        不再由 registerControlPlane.controlPlaneJwtToken 明文传入（那会随 Helm release 落盘），
+        改为从共享 JWT Secret 直接引用，Job 的 Pod spec 中只出现"引用"而非明文。
+        */}}
+        {{- $jwtSecret := include "neon-storage-controller.jwtSecretName" . }}
+        {{- if $jwtSecret }}
+        - name: CONTROL_PLANE_JWT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ $jwtSecret }}
+              key: controlPlaneJwtToken
+        {{- end }}
       volumes:
         - name: config-volume
           secret:

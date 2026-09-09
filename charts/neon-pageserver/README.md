@@ -76,7 +76,7 @@ $ helm install neon ./charts/neon
 
 ## 前置依赖
 
-- **外部 MinIO / S3**：对象存储后端，凭证通过 `bucket-credentials` Secret 提供
+- **外部 MinIO / S3**：对象存储后端，**连接坐标（bucket / region / endpoint）与凭证统一由 `bucket-credentials` Secret 提供**（唯一事实来源，values 中不保留副本）
 - **storage_broker**：WAL 流节点发现（需先部署 `neon-storage-broker`）
 - **storage_controller**：租户调度与心跳管理（需先部署 `neon-storage-controller`）
 - **JWT 密钥对**：Ed25519 公钥用于校验入站请求
@@ -106,6 +106,7 @@ Kubernetes: `^1.18.x-x`
 | nameOverride | string | `""` | 部分覆盖 fullname 模板 |
 | nodeSelector | object | `{}` | 节点选择 |
 | podAnnotations | object | `{}` | Pod 注解 |
+| podAntiAffinity.topologyKey | string | `"kubernetes.io/hostname"` | 节点级反亲和拓扑域（强制开启的硬约束，不可关闭）：kubernetes.io/hostname=按 k8s 节点打散（默认，一个节点一个副本）；topology.kubernetes.io/zone=按可用区打散 |
 | podDisruptionBudget.maxUnavailable | int | `1` | 最大不可用副本数 |
 | podDisruptionBudget.minAvailable | int | `0` | 最小可用副本数（单副本设 0 表示允许中断） |
 | podLabels | object | `{}` | Pod 额外标签 |
@@ -122,13 +123,19 @@ Kubernetes: `^1.18.x-x`
 | serviceAccount.create | bool | `true` | 是否创建 ServiceAccount |
 | serviceAccount.name | string | `""` | 显式指定 SA 名称 |
 | settings.brokerEndpoint | string | `"http://neon-broker-svc:50051"` | storage_broker 地址（WAL 流节点发现） |
-| settings.jwtSecretName | string | `"neon-jwt"` | 共享 JWT 公钥 Secret 名称 |
-| settings.remoteStorage.bucketName | string | `"neondata"` | 对象存储 bucket 名称 |
-| settings.remoteStorage.bucketRegion | string | `"us-east-1"` | 对象存储 region |
-| settings.remoteStorage.endpoint | string | `"http://192.168.232.128:9000"` | 对象存储 endpoint |
-| settings.remoteStorage.prefixInBucket | string | `"pageserver"` | 对象存储路径前缀 |
-| settings.storageControllerApiToken | string | `""` | PS→SC upcall 的 JWT（generations_api scope；留空时回退 `global.jwt.generationsApiJwtToken`） |
+| settings.jwtSecretName | string | `""` | 共享 JWT Secret 名称（外部预建；留空时回退 `global.jwt.existingSecret` > `global.jwt.secretName`，三者皆空则不挂载 jwt 卷）。默认必须为空串，否则父级的 `existingSecret` 无法生效 |
+| settings.remoteStorage.existingSecret | string | `""` | 对象存储 Secret 名称（**连接坐标与凭证的唯一事实来源**）；留空时回退 `global.storage.bucket.existingSecret` > `"bucket-credentials"`。默认必须为空串，否则父级传入的值无法生效 |
+| settings.remoteStorage.keys.bucketName | string | `"BUCKET_NAME"` | Secret 中桶名的键（必填非空） |
+| settings.remoteStorage.keys.region | string | `"AWS_REGION"` | Secret 中地域的键（必填非空） |
+| settings.remoteStorage.keys.endpoint | string | `"AWS_ENDPOINT_URL"` | Secret 中 endpoint 的键（可空：留空走 AWS S3 官方 endpoint；MinIO 必填） |
+| settings.remoteStorage.keys.accessKeyId | string | `"AWS_ACCESS_KEY_ID"` | Secret 中 AccessKeyId 的键（可选：IRSA / WebIdentity 场景可不存在） |
+| settings.remoteStorage.keys.secretAccessKey | string | `"AWS_SECRET_ACCESS_KEY"` | Secret 中 SecretAccessKey 的键（可选，同上） |
+| settings.remoteStorage.prefixInBucket | string | `"pageserver"` | 对象存储路径前缀（布局参数，非连接坐标，故保留在 values） |
 | settings.storageControllerUrl | string | `"http://neon-storage-controller-svc:50051"` | storage_controller 基址（模板自动追加 /upcall/v1 前缀） |
+
+说明：PS→SC upcall 的 JWT（generations_api scope）不再由 values 提供 ——
+它只支持 TOML 内联，放在 values 里会把 token 明文渲染进 ConfigMap。
+改由 init 容器从共享 JWT Secret 的 `generationsApiJwtToken` 键读出后写入 `pageserver.toml`。
 | statefulSet.nodeIdBase | int | `1000` | node id 基址（每 pod id = base + ordinal） |
 | statefulSet.replicas | int | `1` | 副本数（生产可分片调度增大） |
 | statefulSet.resources.limits.cpu | string | `"500m"` | CPU 上限（测试环境；生产建议 >= 4） |

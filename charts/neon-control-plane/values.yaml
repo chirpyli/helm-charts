@@ -19,8 +19,12 @@ settings:
   storageControllerUrl: "http://neon-storage-controller-svc:50051"
   # -- 控制面自身监听端口
   listenPort: 8080
-  # -- 共享 JWT Secret 名称（含 privateKey.pem / publicKey.pem，控制面持有私钥用于签发 token）
-  jwtSecretName: "neon-jwt"
+  # -- 共享 JWT Secret 名称（外部预建，键契约见 charts/neon/templates/NOTES.txt）。
+  # 控制面是唯一需要 privateKey.pem 的组件（持有私钥用于签发 token），
+  # 部署时只投影 privateKey.pem 与 publicKey.pem，不投影任何 token 键，遵循最小权限。
+  # 留空时回退 global.jwt.existingSecret > global.jwt.secretName；三者皆空表示不使用 JWT。
+  # 默认值必须保持空串：非空会让父级传入的 existingSecret 永远无法生效。
+  jwtSecretName: ""
   computeImage: "neondatabase/compute-node-v17:latest"
   # -- 动态拉起的 compute Service 类型：ClusterIP（默认，仅集群内可达）或 NodePort（集群外直连）。
   # 选 NodePort 时，返回给用户的连接串会改为 <nodePortExternalHost>:<nodePort>，

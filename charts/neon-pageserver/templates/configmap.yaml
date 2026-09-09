@@ -16,25 +16,32 @@ data:
     # storage_broker（WAL 流节点发现）
     broker_endpoint  = "{{ .Values.settings.brokerEndpoint }}"
 
-    # 对象存储后端：内联表，字段名已核对 → bucket_region（非 region）
-    remote_storage = { bucket_name = "{{ .Values.settings.remoteStorage.bucketName }}", bucket_region = "{{ .Values.settings.remoteStorage.bucketRegion }}", endpoint = "{{ .Values.settings.remoteStorage.endpoint }}", prefix_in_bucket = "{{ .Values.settings.remoteStorage.prefixInBucket }}" }
+    # 注意：这里刻意不写 remote_storage。
+    # 对象存储的连接坐标（bucket_name / bucket_region / endpoint）与凭证是同一个原子单元，
+    # 其唯一事实来源是对象存储 Secret（默认 bucket-credentials）：
+    #   1) pageserver 的 remote_storage 只能从 TOML 读取，没有环境变量覆盖机制
+    #      （上游 s3_bucket.rs 中 Region 取 bucket_region、endpoint 显式 .endpoint_url() 覆盖）；
+    #   2) 若在 values 里再留一份副本，两处必然漂移且漂移不会被任何校验捕获 ——
+    #      改 Secret 毫无效果、改 values 又与凭证脱节，换桶 / 换 endpoint 时会静默错配；
+    #   3) 写在这里还会把 endpoint（内网地址）暴露给所有可读 ConfigMap 的主体。
+    # 因此由 init-identity 容器在 Pod 启动时从 Secret 读出坐标并追加 remote_storage 行
+    # （与 availability_zone、control_plane_api_token 同一套"模板 + 运行时追加"机制）。
+    # 本模板中绝不能再出现 remote_storage 键，否则与追加的行重复，TOML 解析会直接失败。
 
     # storage_controller upcall 基址（运行时强制必填；pageserver 会 .join("re-attach") 拼接路径，故必须带 /upcall/v1 前缀）
     control_plane_api       = "{{ .Values.settings.storageControllerUrl }}/upcall/v1"
-    # PS→SC upcall 的 JWT：必须是 generations_api scope
-    # （SC 的 upcall_v1_re-attach / validate 均执行 check_permissions(Scope::GenerationsApi)，见 storage_controller/src/http.rs），
-    # 不是 PageServerApi（pageserverJwtToken 是 SC→PS 方向用的，填这里会导致 upcall 401）。
-    # 取值优先级：settings.storageControllerApiToken（独立部署时填写）> global.jwt.generationsApiJwtToken（umbrella 统一注入）；建议通过 --set 注入，勿提交明文
-    control_plane_api_token = "{{ .Values.settings.storageControllerApiToken | default (dig "jwt" "generationsApiJwtToken" "" .Values.global) }}"
+    # 注意：这里刻意不写 control_plane_api_token。
+    # 该字段（PS→SC upcall 的 JWT，必须是 generations_api scope；SC 的 re-attach / validate
+    # 只认这个 scope，误填 PageServerApi 会导致 upcall 401）只支持 TOML 内联 —— 上游
+    # pageserver/src/config.rs 里是 Option<SecretString>，既不支持环境变量也不支持文件路径。
+    # 若在此处内联，token 会以明文进入 ConfigMap，而 ConfigMap 的读权限通常远宽于 Secret。
+    # 因此改为由 init-identity 容器在 Pod 启动时从共享 JWT Secret 读出后追加到本文件
+    # （与 availability_zone 同一套"模板 + 运行时追加"机制）。
 
     # JWT 校验公钥（由各 chart 统一挂载的 Secret 提供，非 TOML 内联）
     auth_validation_public_key_path = "/etc/neon/jwt/publicKey.pem"
     http_auth_type = "NeonJWT"
     pg_auth_type   = "NeonJWT"
-
-    # 注意：这里不再写 availability_zone。
-    # 可用区必须在 Pod 启动时从所在节点的 topology.kubernetes.io/zone 标签动态探测，
-    # 由 init-identity 容器复制本模板并追加 availability_zone 后生成最终的 pageserver.toml。
 
     # PostgreSQL 二进制（initdb / postgres）所在根目录；pageserver 据此拼出
     # <pg_distrib_dir>/v<major>/bin 与 <pg_distrib_dir>/v<major>/lib。

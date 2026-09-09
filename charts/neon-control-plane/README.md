@@ -701,7 +701,7 @@ $ helm install neon ./charts/neon
 
 ## 前置依赖
 
-- **storage_controller**：租户/节点调度（需先部署并配置 databaseUrl）
+- **storage_controller**：租户/节点调度（需先部署并配置外部 PostgreSQL 连接串 Secret `global.storageController.databaseUrl.existingSecret`）
 - **pageserver / safekeeper**：需先部署，由它们自注册进 storage_controller（控制面不代注册）；SC 中无 Active 节点时创建 endpoint 会返回 503
 - **JWT 密钥对**：控制面持有私钥签发 token；pageserver/safekeeper 挂载公钥校验
 
@@ -836,7 +836,7 @@ Kubernetes: `^1.18.x-x`
 | serviceAccount.name                  | string | `""`                                                                                             | 显式指定 SA 名称                                                     |
 | settings.computeImage                | string | `"neondatabase/neon:latest"`                                                                     | 动态拉起 compute 使用的镜像                                          |
 | settings.domain                      | string | `"neon.local"`                                                                                   | proxy 兼容接口域名（phase-2 启用 proxy 时使用）                      |
-| settings.jwtSecretName               | string | `"neon-jwt"`                                                                                     | 共享 JWT Secret 名称（含 privateKey.pem / publicKey.pem）            |
+| settings.jwtSecretName               | string | `""`                                                                                             | 共享 JWT Secret 名称（控制面是唯一投影 privateKey.pem 的组件；留空时回退 `global.jwt.existingSecret`） |
 | settings.listenPort                  | int    | `8080`                                                                                           | 控制面自身监听端口                                                   |
 | settings.storageControllerUrl        | string | `"http://neon-storage-controller-svc:50051"`                                                     | storage_controller 基址（含端口）                                    |
 | tolerations                          | list   | `[]`                                                                                             | 容忍                                                                 |

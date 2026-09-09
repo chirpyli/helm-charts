@@ -24,23 +24,55 @@ settings:
   brokerEndpoint: "http://neon-broker-svc:50051"
   # -- storage_controller 基址（不含 /upcall/v1 前缀，模板会自动追加）。umbrella 下默认指向 neon-storage-controller-svc
   storageControllerUrl: "http://neon-storage-controller-svc:50051"
-  # -- PS→SC upcall 的 JWT，必须是 generations_api scope（SC 的 re-attach/validate 只认该 scope）。
-  # 留空时回退 global.jwt.generationsApiJwtToken；若误填 PageServerApi(pageserverJwtToken) 会导致 upcall 401。
-  storageControllerApiToken: ""
+  # 注意：PS→SC upcall 的 JWT（generations_api scope）不再通过此文件填写。
+  # 它必须由 init 容器从共享 JWT Secret 的 generationsApiJwtToken 键读出后写入 pageserver.toml：
+  # pageserver 的 control_plane_api_token 只支持 TOML 内联（见 pageserver/src/config.rs），
+  # 放在 values 里必然会把 token 明文渲染进 ConfigMap，任何可读 ConfigMap 的人都能取到。
   # Pod 启动时由 init 容器通过 kube-apiserver 读取所在节点的 topology.kubernetes.io/zone 标签动态获取，
   # 并分别写入运行时生成的 pageserver.toml（availability_zone）与 metadata.json（availability_zone_id）。
   # 节点缺少该标签时 Pod 会停在 Init 状态并报错退出（不会带空/错误的 AZ 注册）。
   # -- PostgreSQL 二进制根目录（pageserver 据此找 v<major>/bin/initdb 与 lib）。
   # 镜像内二进制位于 /usr/local/v{14..17}，必须显式指向 /usr/local，否则默认工作目录找不到 initdb
   pgDistribDir: "/usr/local"
-  # -- 对象存储（外部 MinIO / S3）。凭证由 bucket-credentials Secret 经环境变量注入
+  # -- 对象存储（外部 MinIO / S3）。
+  # 【唯一事实来源】连接坐标（bucket / region / endpoint）与凭证全部来自 bucket-credentials Secret，
+  # values 里刻意不再提供 bucketName / bucketRegion / endpoint 的副本。
+  # 为什么不能两边都填（上游行为已核对，见 libs/remote_storage/src/s3_bucket.rs）：
+  #   1) pageserver 的 remote_storage 只从 pageserver.toml 读取，没有环境变量覆盖机制 ——
+  #      Region 取 bucket_region、endpoint 显式 .endpoint_url() 覆盖、bucket 取 bucket_name，
+  #      AWS_REGION / AWS_ENDPOINT_URL / AWS_BUCKET 这类环境变量对 pageserver 完全无效；
+  #   2) 因此"values 一份 + Secret 一份"不是简单的重复，而是必然漂移且漂移不会被任何校验捕获：
+  #      改了 Secret 毫无效果，改了 values 又与凭证脱节（换桶 / 换 endpoint 时会静默错配）；
+  #   3) 坐标与凭证在语义上是一个原子单元（"连哪个对象存储"），必须一起定义、一起轮换。
+  # 额外收益：坐标不落 ConfigMap（其读权限通常远宽于 Secret）、不随 values 进 git，
+  # 换桶 / 换 endpoint 只需改 Secret + rollout restart，无需 helm upgrade。
   remoteStorage:
-    bucketName: "neondata"
-    bucketRegion: "us-east-1"
-    endpoint: "http://192.168.232.128:9000"
+    # -- 对象存储 Secret 名称；留空时依次回退 global.storage.bucket.existingSecret > "bucket-credentials"。
+    # 默认值必须保持空串：非空会让父级（umbrella）传入的 existingSecret 永远无法生效
+    # （与 settings.jwtSecretName 同一约定，详见 _helpers.tpl 的注释）。
+    existingSecret: ""
+    # -- Secret 键名映射。默认键名沿用 docs/ 中已发布的示例（改动会破坏既有部署，勿轻易调整）；
+    # 只需覆盖与默认值不同的那几个键，未列出的键回退到下面的默认值。
+    # 必填性由 init-identity 容器在 Pod 启动时强校验（缺失即 FATAL 退出，绝不带错误配置启动）：
+    #   bucketName / region：必填非空；
+    #   endpoint：可为空 —— 上游 S3Config.endpoint 是 Option<String>，
+    #             省略即走 AWS S3 官方 endpoint（真 S3 + IRSA 场景）；MinIO / S3 兼容存储必须提供；
+    #   accessKeyId / secretAccessKey：可选 —— 上游经 DefaultCredentialsChain 读取，
+    #             使用 IRSA / WebIdentity / IMDSv2 时这两个键可以不存在。
+    keys:
+      bucketName: "BUCKET_NAME"
+      region: "AWS_REGION"
+      endpoint: "AWS_ENDPOINT_URL"
+      accessKeyId: "AWS_ACCESS_KEY_ID"
+      secretAccessKey: "AWS_SECRET_ACCESS_KEY"
+    # -- 桶内路径前缀。保留在 values：它属于"多环境共享同一个桶时如何隔离数据"的布局参数，
+    # 而不是"连哪个对象存储"的连接坐标，Secret 中也没有对应的键。
     prefixInBucket: "pageserver"
-  # -- 共享 JWT 公钥 Secret 名称（存放 publicKey.pem 等），由 umbrella 统一创建
-  jwtSecretName: "neon-jwt"
+  # -- 共享 JWT Secret 名称（外部预建，键契约见 charts/neon/templates/NOTES.txt）。
+  # 留空时回退 global.jwt.existingSecret > global.jwt.secretName；
+  # 三个来源都为空表示不使用 JWT（子 chart 独立部署场景），此时不挂载 jwt 卷。
+  # 默认值必须保持空串：非空会让父级传入的 existingSecret 永远无法生效。
+  jwtSecretName: ""
 
 serviceAccount:
   # serviceAccount.create -- 是否创建 ServiceAccount
@@ -109,6 +141,20 @@ tolerations: []
 affinity: {}
 # -- 优先级类
 priorityClassName: ""
+
+# Pod 反亲和（节点级打散）：强制开启，恒为硬约束，不可关闭、不可降级为软约束。
+# 背景：pageserver 是有状态服务，默认使用 local-path（hostPath 型）StorageClass，
+# PV 天然绑定某一台 k8s 节点。若多个 pageserver 副本被调度到同一个节点：
+#   1) 该节点宕机会同时打掉多个副本，租户分片大面积不可用；
+#   2) 单机磁盘故障会同时损坏多个副本的数据目录；
+#   3) 副本间还会争抢同一节点的 CPU / 内存 / 磁盘 IO。
+# 因此固定渲染 requiredDuringSchedulingIgnoredDuringExecution，强制每个副本落在不同的 k8s 节点上。
+# 注意：硬约束要求 可调度节点数 >= 副本数，否则 Pod 将长期 Pending；
+#       节点不足时应扩容节点或调小 statefulSet.replicas（没有降级开关）。
+podAntiAffinity:
+  # -- 拓扑域：kubernetes.io/hostname = 按 k8s 节点打散（默认，满足“一个节点一个副本”）；
+  #            topology.kubernetes.io/zone = 按可用区打散（多可用区生产环境可选）
+  topologyKey: "kubernetes.io/hostname"
 
 # -- pageserver 容器内 PostgreSQL 二进制的 lib 搜索路径。
 # pageserver 拉起时间线（initdb）与运行 postgres 子进程时依赖 libpq 等动态库，
