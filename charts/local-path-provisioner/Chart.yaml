@@ -1,0 +1,16 @@
+apiVersion: v2
+name: local-path-provisioner
+description: Local disk StorageClass, Neon pageserver/safekeepe PVC
+type: application
+version: 0.1.0
+# appVersion 对齐上游 release 版本
+appVersion: "v0.0.36"
+kubeVersion: "^1.18.x-x"
+home: https://github.com/rancher/local-path-provisioner
+sources:
+  - https://github.com/rancher/local-path-provisioner
+keywords:
+  - storage
+  - storageclass
+  - local-path
+  - neon

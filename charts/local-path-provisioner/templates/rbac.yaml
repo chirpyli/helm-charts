@@ -1,0 +1,109 @@
+{{- /*
+RBAC：
+- ClusterRole/ClusterRoleBinding：集群级只读与 PV 管理能力（nodes / pvc / pv / events / storageclasses）
+- Role/RoleBinding：命名空间内对 helper Pod 的增删改查（provisioner 在自身命名空间创建 helper Pod 建/删卷）
+与上游 v0.0.36 的 local-path-storage.yaml 等价。
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "local-path-provisioner.fullname" . }}-role
+  labels:
+    {{- include "local-path-provisioner.labels" . | nindent 4 }}
+rules:
+  # 读取节点、PVC、ConfigMap、Pod（含日志）信息：用于决定卷落在哪个节点/路径，以及读取 helper Pod 日志
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+      - persistentvolumeclaims
+      - configmaps
+      - pods
+      - pods/log
+    verbs:
+      - get
+      - list
+      - watch
+  # PV 生命周期管理：动态创建/更新/删除本地 hostPath PV
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumes
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - patch
+      - update
+      - delete
+  # 供给过程产生事件，便于排障
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+  # 读取 StorageClass 以确认由本 provisioner 处理
+  - apiGroups:
+      - storage.k8s.io
+    resources:
+      - storageclasses
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "local-path-provisioner.fullname" . }}-bind
+  labels:
+    {{- include "local-path-provisioner.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "local-path-provisioner.fullname" . }}-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "local-path-provisioner.serviceAccountName" . }}
+    namespace: {{ include "local-path-provisioner.namespace" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "local-path-provisioner.fullname" . }}-role
+  namespace: {{ include "local-path-provisioner.namespace" . }}
+  labels:
+    {{- include "local-path-provisioner.labels" . | nindent 4 }}
+rules:
+  # helper Pod 的生命周期管理：建卷/删卷时在目标节点创建一次性 Pod
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - patch
+      - update
+      - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "local-path-provisioner.fullname" . }}-bind
+  namespace: {{ include "local-path-provisioner.namespace" . }}
+  labels:
+    {{- include "local-path-provisioner.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "local-path-provisioner.fullname" . }}-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "local-path-provisioner.serviceAccountName" . }}
+    namespace: {{ include "local-path-provisioner.namespace" . }}

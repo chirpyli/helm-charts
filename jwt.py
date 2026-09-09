@@ -117,7 +117,8 @@ def main():
     parser.add_argument(
         "--tenant-id",
         default="3d1f7595b468230304e0b73cecbcb081",
-        help="Tenant scope token 的 tenant_id（默认与 umbrella values 中的 defaultTenantId 一致）",
+        # 该默认值仅为示例：控制面已移除"默认租户"概念，tenant 由 POST /projects 按需创建
+        help="Tenant scope token 的 tenant_id（仅示例默认值，可替换为任意 32 位 hex）",
     )
     args = parser.parse_args()
 

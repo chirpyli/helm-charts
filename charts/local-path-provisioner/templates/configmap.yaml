@@ -1,0 +1,24 @@
+{{- /*
+provisioner 的运行配置：
+- config.json：节点 → 宿主机路径映射（nodePathMap）
+- setup / teardown：建卷/删卷脚本，由 helper Pod 在目标节点执行
+- helperPod.yaml：helper Pod 模板（支持 Go template，可引用 config.helperImage）
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "local-path-provisioner.configMapName" . }}
+  namespace: {{ include "local-path-provisioner.namespace" . }}
+  labels:
+    {{- include "local-path-provisioner.labels" . | nindent 4 }}
+data:
+  config.json: |-
+    {
+      "nodePathMap": {{ toJson .Values.config.nodePathMap }}
+    }
+  setup: |-
+{{- .Values.config.setup | trim | nindent 4 }}
+  teardown: |-
+{{- .Values.config.teardown | trim | nindent 4 }}
+  helperPod.yaml: |-
+{{- tpl .Values.config.helperPod . | trim | nindent 4 }}

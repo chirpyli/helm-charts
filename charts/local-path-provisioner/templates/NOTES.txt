@@ -1,0 +1,28 @@
+local-path-provisioner 已部署到命名空间 {{ include "local-path-provisioner.namespace" . }}。
+
+{{ if .Values.storageClass.create -}}
+1. 确认 StorageClass 已就绪：
+   kubectl get storageclass {{ .Values.storageClass.name }}
+{{ if not .Values.storageClass.isDefaultClass }}
+   该 StorageClass **未**设为集群默认，业务组件需显式引用：
+     storageClassName: {{ .Values.storageClass.name }}
+
+   例如（Neon 有状态组件）：
+     helm upgrade neon ./charts/neon --set neon-pageserver.statefulSet.storage.storageClassName={{ .Values.storageClass.name }}
+
+   如需设为集群默认（谨慎，会影响集群内所有未指定 SC 的 PVC）：
+     helm upgrade {{ .Release.Name }} . --set storageClass.isDefaultClass=true
+{{- end }}
+{{- else -}}
+StorageClass 未创建（storageClass.create=false），请确认集群中已存在名为 {{ .Values.storageClass.name }} 的 StorageClass。
+{{- end }}
+
+2. 确认 provisioner 运行正常：
+   kubectl -n {{ include "local-path-provisioner.namespace" . }} get pods -l app.kubernetes.io/name={{ include "local-path-provisioner.name" . }}
+
+3. 功能验证：创建一个使用 storageClassName={{ .Values.storageClass.name }} 的 PVC 与 Pod，
+   provisioner 会在目标节点的映射路径（默认 /opt/local-path-provisioner）下创建卷目录。
+   排障日志：
+   kubectl -n {{ include "local-path-provisioner.namespace" . }} logs -l app.kubernetes.io/name={{ include "local-path-provisioner.name" . }} -f
+
+提示：该卷数据落在节点本地磁盘，节点故障会导致数据不可用，请勿用于需要跨节点高可用或有状态强一致的生产数据。

@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "local-path-provisioner.fullname" . }}
+  namespace: {{ include "local-path-provisioner.namespace" . }}
+  labels:
+    {{- include "local-path-provisioner.labels" . | nindent 4 }}
+spec:
+  # 副本数固定为 1：上游 v0.0.36 未启用 leader election，多副本会重复供给卷
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    # 单副本且需要独占配置，使用 Recreate 避免新旧实例并发供给
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "local-path-provisioner.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "local-path-provisioner.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "local-path-provisioner.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: local-path-provisioner
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - local-path-provisioner
+            {{- if .Values.debug }}
+            - --debug
+            {{- end }}
+            - start
+            - --config
+            - /etc/config/config.json
+          env:
+            # provisioner 需要知道自身命名空间：用于创建 helper Pod、写事件
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # 配置文件挂载路径（config.json / setup / teardown / helperPod.yaml）
+            - name: CONFIG_MOUNT_PATH
+              value: /etc/config/
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config/
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: config-volume
+          configMap:
+            name: {{ include "local-path-provisioner.configMapName" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}

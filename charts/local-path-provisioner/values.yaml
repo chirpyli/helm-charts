@@ -1,0 +1,151 @@
+# Default values for local-path-provisioner.
+# 本 chart 部署 Rancher local-path-provisioner：在集群中提供基于节点本地磁盘的动态 StorageClass，
+# 供 Neon pageserver / safekeeper 等有状态组件以 PVC 方式申请本地存储。
+# 等价于上游 v0.0.36 的 deploy/local-path-storage.yaml，并在此基础上做了完整参数化。
+
+# 全局配置（umbrella 化时由父 chart 的 global 覆盖）
+global: {}
+
+image:
+  # -- provisioner 镜像仓库
+  repository: rancher/local-path-provisioner
+  # -- 镜像拉取策略
+  pullPolicy: IfNotPresent
+  # -- 镜像 tag（对应上游 release 版本）
+  tag: "v0.0.36"
+
+# -- Specify docker-registry secret names as an array
+imagePullSecrets: []
+
+# -- String to partially override local-path-provisioner.fullname template (will maintain the release name)
+nameOverride: ""
+# -- String to fully override local-path-provisioner.fullname template
+fullnameOverride: ""
+
+# 命名空间策略：
+# 作为 neon umbrella 的子 chart 时，资源必须落在 release 命名空间（Helm 语义），
+# 因此默认不创建独立命名空间；独立部署且希望与官方一致时可将 create 置为 true。
+namespace:
+  # -- 是否创建独立的命名空间（默认 false，资源部署在 release 命名空间）
+  create: false
+  # -- 独立命名空间名称（仅 namespace.create=true 时生效）
+  name: "local-path-storage"
+
+serviceAccount:
+  # -- 是否创建 ServiceAccount
+  create: true
+  # -- ServiceAccount 注解
+  annotations: {}
+  # -- ServiceAccount 名称，留空则使用 fullname 模板生成
+  name: ""
+
+# -- Deployment 副本数。上游 v0.0.36 未启用 leader election，多副本会重复供给卷，禁止 > 1
+replicaCount: 1
+
+# -- 是否给 provisioner 追加 --debug 参数（排障时开启，日常关闭避免高频日志）
+debug: false
+
+# provisioner 运行配置（渲染为 ConfigMap 的 config.json / setup / teardown / helperPod.yaml）
+config:
+  # -- 节点 → 宿主机路径映射。
+  # node 为 "DEFAULT_PATH_FOR_NON_LISTED_NODES" 表示未显式列举节点的默认路径；
+  # 也可配置成 [{node: "node1", paths: ["/opt/local-path-provisioner", "/data1"]}, ...]
+  nodePathMap:
+    - node: "DEFAULT_PATH_FOR_NON_LISTED_NODES"
+      paths:
+        - /opt/local-path-provisioner
+  # -- 建卷脚本（在目标节点由 helper Pod 执行，$VOL_DIR 由 provisioner 注入）
+  setup: |
+    #!/bin/sh
+    set -eu
+    mkdir -m 0777 -p "$VOL_DIR"
+  # -- 删卷脚本（PV 回收策略为 Delete 时执行）
+  teardown: |
+    #!/bin/sh
+    set -eu
+    rm -rf "$VOL_DIR"
+  # 清理/建卷用的 helper Pod 模板（挂载宿主机目录后执行 setup/teardown）。
+  # 内容支持 Go template 语法，可通过 tpl 引用下方 helperImage。
+  helperPod: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: helper-pod
+    spec:
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: helper-pod
+          image: {{ printf "%s:%s" .Values.config.helperImage.repository .Values.config.helperImage.tag }}
+          imagePullPolicy: {{ .Values.config.helperImage.pullPolicy }}
+  # -- helper Pod 使用的镜像（私有仓库场景需覆盖）
+  helperImage:
+    repository: busybox
+    pullPolicy: IfNotPresent
+    tag: "1.35.0"
+
+# 动态供给出来的 StorageClass 配置
+storageClass:
+  # -- 是否创建 StorageClass（集群已有同名 SC 时置为 false，避免冲突）
+  create: true
+  # -- StorageClass 名称
+  name: "local-path"
+  # -- 供给者标识（必须与 provisioner 注册的一致，不可随意修改）
+  provisioner: "rancher.io/local-path"
+  # -- PV 回收策略（Delete / Retain）
+  reclaimPolicy: Delete
+  # -- 卷绑定模式。本地盘必须 WaitForFirstConsumer，否则调度可能把 Pod 分到没有数据的节点
+  volumeBindingMode: WaitForFirstConsumer
+  # -- 是否允许卷扩容（本地盘依赖底层文件系统，默认关闭）
+  allowVolumeExpansion: false
+  # -- 是否设为集群默认 StorageClass（会加 storageclass.kubernetes.io/is-default-class 注解）。
+  # 默认 false：避免抢占集群默认 SC 影响其他组件，Neon 组件通过 storageClassName 显式引用
+  isDefaultClass: false
+  # -- StorageClass 附加注解
+  annotations: {}
+
+# -- Annotations for local-path-provisioner pods
+podAnnotations: {}
+
+# -- Additional labels for local-path-provisioner pods
+podLabels: {}
+
+# -- local-path-provisioner's pods Security Context
+podSecurityContext: {}
+  # fsGroup: 2000
+
+# -- local-path-provisioner's containers Security Context
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+# -- Pod 资源配额（provisioner 本身负载极低）
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# -- Node labels for pod assignment.
+nodeSelector: {}
+
+# -- Tolerations for pod assignment.
+tolerations: []
+
+# -- Affinity for pod assignment
+affinity: {}
+
+# -- Pod priority class
+priorityClassName: ""
+
+# -- Additional manifests that are created with the chart
+extraManifests: []
