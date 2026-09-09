@@ -58,6 +58,12 @@ func handleNotifyAttach(w http.ResponseWriter, r *http.Request) {
 		if ep.TenantID != req.TenantID {
 			continue
 		}
+		// spec 尚未生成（创建时 SC 未完成调度）时跳过，避免空指针；
+		// 该 endpoint 会在 compute_ctl 下一次拉取 spec 时由 getComputeSpec 重建并自愈。
+		if ep.Spec == nil {
+			log.Printf("notify-attach: skip endpoint=%s (spec not built yet)", ep.EndpointID)
+			continue
+		}
 		// 重建 pageserver_connection_info
 		shards := buildShardsFromLocate(locate)
 		ep.Spec.PageserverConnectionInfo = PageserverConnInfo{
@@ -122,6 +128,11 @@ func handleNotifySafekeepers(w http.ResponseWriter, r *http.Request) {
 	var updated int
 	for _, ep := range st.endpoints {
 		if ep.TenantID != req.TenantID {
+			continue
+		}
+		// spec 尚未生成时跳过，避免空指针；后续由 getComputeSpec 重建自愈。
+		if ep.Spec == nil {
+			log.Printf("notify-safekeepers: skip endpoint=%s (spec not built yet)", ep.EndpointID)
 			continue
 		}
 		ep.Spec.SafekeeperConnstrings = skConns

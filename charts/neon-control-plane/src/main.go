@@ -38,48 +38,14 @@ var (
 //   - project_id → tenant_id
 //   - branch_id → (tenant_id, timeline_id)
 //   - endpoint_id → (tenant_id, timeline_id, compute_pod_name, status)
+//
+// 注意：不再保存"默认租户 / 默认时间线"。tenant 与 timeline 一律由 POST /projects 按需创建，
+// 每个 project 独占一个 tenant，因此不存在全局默认分支的概念。
 type state struct {
 	mu        sync.RWMutex
 	projects  map[string]*Project
 	branches  map[string]*Branch // 新增：branch_id → Branch
 	endpoints map[string]*Endpoint
-
-	// 默认租户和时间线（bootstrap 创建，作为 main 分支）
-	tenantID          string
-	defaultTimelineID string // 初始时间线 ID（main 分支）
-	defaultBranchID   string // 默认分支 ID（br-main）
-}
-
-// setDefaultTimeline 设置默认时间线 ID 和对应的默认分支 ID。
-func (s *state) setDefaultTimeline(timelineID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.defaultTimelineID = timelineID
-	s.defaultBranchID = "br-main"
-}
-
-// getDefaultTimeline 返回默认时间线和分支 ID（读锁保护）。
-func (s *state) getDefaultTimeline() (timelineID, branchID string) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.defaultTimelineID, s.defaultBranchID
-}
-
-// getDefaultBranch 返回默认分支对象（从 branches map 中查找）。
-func (s *state) getDefaultBranch() *Branch {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if b, ok := s.branches[s.defaultBranchID]; ok {
-		return b
-	}
-	// 回退：构造默认分支
-	return &Branch{
-		BranchID:   s.defaultBranchID,
-		TenantID:   s.tenantID,
-		TimelineID: s.defaultTimelineID,
-		Name:       "main",
-		Default:    true,
-	}
 }
 
 // =============================================================================
@@ -111,12 +77,11 @@ func main() {
 	// 初始化 SC 客户端
 	sc = newSCClient(cfg.StorageControllerURL, signer)
 
-	// 初始化进程内状态
+	// 初始化进程内状态（不再有默认 tenant，全部由 POST /projects 按需创建）
 	st = &state{
 		projects:  map[string]*Project{},
 		branches:  map[string]*Branch{},
 		endpoints: map[string]*Endpoint{},
-		tenantID:  cfg.DefaultTenantID,
 	}
 
 	// 尝试 K8s 客户端初始化（持久化 + compute 编排用）
@@ -127,10 +92,9 @@ func main() {
 		log.Printf("kube: not in cluster (%v) — persistence and compute management disabled", err)
 	}
 
-	// 幂等 bootstrap：注册节点、建默认租户/时间线
-	if err := bootstrap(); err != nil {
-		log.Printf("WARN bootstrap: %v", err)
-	}
+	// 只读诊断：打印一次 SC 中已注册的节点快照。
+	// 节点由各组件自注册（pageserver re-attach / safekeeper sk-register sidecar），控制面不注册、不等待。
+	logStorageNodes()
 
 	// 启动对账：从 ConfigMap 恢复状态 + K8s 真相对账
 	reconcileOnStartup()
@@ -142,8 +106,7 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.ListenPort)
 	log.Printf("neon-control-plane listening on %s", addr)
 	log.Printf("  storage-controller: %s", cfg.StorageControllerURL)
-	log.Printf("  default tenant: %s", st.tenantID)
-	log.Printf("  pageservers: %d, safekeepers: %d", len(cfg.Pageservers), len(cfg.Safekeepers))
+	// 节点信息不在本地配置中：运行时从 SC 查询（见 logStorageNodes 与 resolvePageserverInfo/resolveSafekeeperConns）
 
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("server: %v", err)
@@ -345,35 +308,41 @@ func createProject(w http.ResponseWriter, r *http.Request) {
 	st.mu.Unlock()
 
 	// 6) 自动创建 primary read_write endpoint（对齐 Neon Cloud 行为）
-	ep, scramPassword := prepareEndpointForBranch(projectID, tenantID,
+	//    存储节点地址只从 SC 动态获取；若 SC 尚未完成调度或无 Active safekeeper，
+	//    这里返回 503（而不是下发一份指向不存在节点的坏 spec）。
+	ep, scramPassword, err := prepareEndpointForBranch(projectID, tenantID,
 		timelineID, mainBranch.BranchID, "read_write", roleName, databaseName)
+	if err != nil {
+		logWarn("createProject %s: prepare endpoint: %v", projectID, err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
 
 	st.mu.Lock()
 	st.endpoints[ep.EndpointID] = ep
 	st.mu.Unlock()
 
-	// 7) K8s 动态拉起 compute（若启用）
+	// 7) K8s 动态拉起 compute
+	// compute 节点没有静态部署形态：只能由控制面通过 in-cluster K8s API 动态创建
+	// Deployment + Service，compute_ctl 启动后再回调本服务拉取 ComputeSpec。
 	// kc 声明在函数作用域，便于下方构造连接串时回读 NodePort。
-	var kc *kubeClient
-	if cfg.EnableK8sCompute {
-		var kcErr error
-		kc, kcErr = newKubeClient()
-		if kcErr == nil {
-			if err := kc.createDeployment(buildComputeDeployment(ep)); err != nil {
-				logWarn("createProject %s: create compute deployment %s: %v",
-					projectID, ep.EndpointID, err)
-			} else {
-				ep.Status = "running"
-				log.Printf("createProject %s: compute deployment %s created",
-					projectID, ep.EndpointID)
-			}
-			if err := kc.createService(buildComputeService(ep)); err != nil {
-				logWarn("createProject %s: create compute service %s: %v",
-					projectID, ep.EndpointID, err)
-			}
+	kc, kcErr := newKubeClient()
+	if kcErr != nil {
+		// 不在集群内（或 ServiceAccount 不可用）：仅记录告警，保持 best-effort，
+		// 仍返回已生成的 ComputeSpec 供排障，不把 201 变成 5xx。
+		logWarn("createProject %s: kube client 不可用，跳过 compute 拉起: %v", projectID, kcErr)
+	} else {
+		if err := kc.createDeployment(buildComputeDeployment(ep)); err != nil {
+			logWarn("createProject %s: create compute deployment %s: %v",
+				projectID, ep.EndpointID, err)
 		} else {
-			logWarn("createProject %s: K8s compute enabled but not in cluster: %v",
-				projectID, kcErr)
+			ep.Status = "running"
+			log.Printf("createProject %s: compute deployment %s created",
+				projectID, ep.EndpointID)
+		}
+		if err := kc.createService(buildComputeService(ep)); err != nil {
+			logWarn("createProject %s: create compute service %s: %v",
+				projectID, ep.EndpointID, err)
 		}
 	}
 
@@ -805,39 +774,36 @@ func deleteBranch(w http.ResponseWriter, r *http.Request, projectID, branchID st
 //	定位 pageserver → 获取 safekeeper 列表 → 签发 storage JWT → 生成 SCRAM 验证器
 //	→ 组装 ComputeSpec → 返回 Endpoint 对象 + 明文密码
 //
+// pageserver / safekeeper 的地址**只来自 storage controller**（locate / safekeeper list），
+// 没有静态清单兜底：查不到就直接返回 error，由调用方回 503。
+// 宁可让请求失败，也不能下发指向不存在节点的 ComputeSpec（compute 起来后连不上存储，且只有 WARN 日志，极难排查）。
+//
 // 返回的 Endpoint 和明文 SCRAM 密码由调用方负责注册到 state 和持久化。
 func prepareEndpointForBranch(projectID, tenantID, timelineID, branchID,
-	epType, roleName, databaseName string) (*Endpoint, string) {
+	epType, roleName, databaseName string) (*Endpoint, string, error) {
 
 	epID := "ep-" + randHex(8)
+	ctx := context.Background()
 
-	// 1) 定位 pageserver：通过 SC 查询最新位置
-	pageserverInfo := buildDefaultPageserverInfo()
-	if loc, err := sc.tenantLocate(context.Background(), tenantID); err == nil {
-		pageserverInfo = PageserverConnInfo{
-			ShardCount: loc.ShardParams.ShardCount,
-			StripeSize: loc.ShardParams.StripeSize,
-			Shards:     buildShardsFromLocate(loc),
-		}
-		log.Printf("prepareEndpoint %s: located pageserver via SC for tenant=%s", epID, tenantID)
-	} else {
-		logWarn("prepareEndpoint %s: tenant locate failed for %s: %v (using static config)", epID, tenantID, err)
+	// 1) 定位 pageserver：只能通过 SC 查询最新位置（失败即返回错误）
+	pageserverInfo, err := resolvePageserverInfo(ctx, tenantID)
+	if err != nil {
+		return nil, "", fmt.Errorf("prepareEndpoint %s: %w", epID, err)
 	}
+	log.Printf("prepareEndpoint %s: located pageserver via SC for tenant=%s", epID, tenantID)
 
-	// 2) 取 safekeeper 列表：动态从 SC 获取 Active 节点
-	skConns := buildDefaultSafekeeperConns()
-	if sks, err := sc.listSafekeepers(context.Background()); err == nil && len(sks) > 0 {
-		skConns = make([]string, 0, len(sks))
-		for _, sk := range sks {
-			skConns = append(skConns, fmt.Sprintf("%s:%d", sk.Host, sk.Port))
-		}
-		log.Printf("prepareEndpoint %s: %d active safekeepers from SC", epID, len(sks))
-	} else {
-		logWarn("prepareEndpoint %s: list safekeepers failed: %v (using static config)", epID, err)
+	// 2) 取 safekeeper 列表：动态从 SC 获取 Active 节点（失败即返回错误）
+	skConns, err := resolveSafekeeperConns(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("prepareEndpoint %s: %w", epID, err)
 	}
+	log.Printf("prepareEndpoint %s: %d active safekeepers from SC", epID, len(skConns))
 
 	// 3) 签发 storage JWT（tenant scope 同时满足 pageserver 和 safekeeper 的鉴权需求）
-	tok, _ := signer.signWithTenant("tenant", tenantID)
+	tok, err := signer.signWithTenant("tenant", tenantID)
+	if err != nil {
+		return nil, "", fmt.Errorf("prepareEndpoint %s: sign storage token: %w", epID, err)
+	}
 
 	// 4) 生成 SCRAM 验证器，返回明文密码给调用方
 	scramPassword := randHex(16)
@@ -891,7 +857,7 @@ func prepareEndpointForBranch(projectID, tenantID, timelineID, branchID,
 		ScramPassword: scramPassword,
 		Spec:          spec,
 		Status:        "created",
-	}, scramPassword
+	}, scramPassword, nil
 }
 
 // createEndpoint 在指定 project 下创建 endpoint（运行中的 compute 实例）。
@@ -962,32 +928,37 @@ func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
 	databaseName = "neondb"
 
 	// 3) 共享函数准备 endpoint
-	ep, scramPassword := prepareEndpointForBranch(projectID, tenantID,
+	//    存储节点地址只从 SC 动态获取，失败直接 503，不再回退静态清单。
+	ep, scramPassword, err := prepareEndpointForBranch(projectID, tenantID,
 		timelineID, branchID, req.Type, roleName, databaseName)
+	if err != nil {
+		logWarn("createEndpoint: prepare endpoint: %v", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
 
 	// 4) 注册到 state
 	st.mu.Lock()
 	st.endpoints[ep.EndpointID] = ep
 	st.mu.Unlock()
 
-	// 5) K8s 动态拉起 compute（若启用）
-	// kc 声明在函数作用域，便于下方构造连接串时回读 NodePort。
-	var kc *kubeClient
-	if cfg.EnableK8sCompute {
-		var kcErr error
-		kc, kcErr = newKubeClient()
-		if kcErr == nil {
-			if err := kc.createDeployment(buildComputeDeployment(ep)); err != nil {
-				logWarn("createEndpoint %s: create compute deployment: %v", ep.EndpointID, err)
-			} else {
-				ep.Status = "running"
-				log.Printf("createEndpoint %s: compute deployment created", ep.EndpointID)
-			}
-			if err := kc.createService(buildComputeService(ep)); err != nil {
-				logWarn("createEndpoint %s: create compute service: %v", ep.EndpointID, err)
-			}
+	// 5) K8s 动态拉起 compute
+	// compute 节点没有静态部署形态：只能由控制面通过 in-cluster K8s API 动态创建
+	// Deployment + Service。kc 声明在函数作用域，便于下方构造连接串时回读 NodePort。
+	kc, kcErr := newKubeClient()
+	if kcErr != nil {
+		// 不在集群内（或 ServiceAccount 不可用）：best-effort，仅记录告警，
+		// 仍返回已生成的 ComputeSpec 供排障。
+		logWarn("createEndpoint %s: kube client 不可用，跳过 compute 拉起: %v", ep.EndpointID, kcErr)
+	} else {
+		if err := kc.createDeployment(buildComputeDeployment(ep)); err != nil {
+			logWarn("createEndpoint %s: create compute deployment: %v", ep.EndpointID, err)
 		} else {
-			logWarn("createEndpoint %s: K8s compute enabled but not in cluster: %v", ep.EndpointID, kcErr)
+			ep.Status = "running"
+			log.Printf("createEndpoint %s: compute deployment created", ep.EndpointID)
+		}
+		if err := kc.createService(buildComputeService(ep)); err != nil {
+			logWarn("createEndpoint %s: create compute service: %v", ep.EndpointID, err)
 		}
 	}
 
@@ -1024,7 +995,7 @@ func listEndpoints(w http.ResponseWriter, r *http.Request, projectID string) {
 }
 
 // deleteEndpoint 删除指定 endpoint。
-// 若启用了 K8s compute，同时清理对应的 Deployment 和 Service。
+// compute 只能动态拉起，因此删除时总是同步清理对应的 Deployment 和 Service。
 func deleteEndpoint(w http.ResponseWriter, r *http.Request, projectID, endpointID string) {
 	st.mu.Lock()
 	ep, ok := st.endpoints[endpointID]
@@ -1041,7 +1012,7 @@ func deleteEndpoint(w http.ResponseWriter, r *http.Request, projectID, endpointI
 	delete(st.endpoints, endpointID)
 	st.mu.Unlock()
 
-	// 清理 K8s 资源（若启用 K8s compute）
+	// 清理 K8s 资源（compute 只能动态拉起，其 Deployment/Service 由控制面负责回收）
 	cleanupK8sComputeResources(endpointID)
 
 	triggerPersist()
@@ -1055,9 +1026,6 @@ func deleteEndpoint(w http.ResponseWriter, r *http.Request, projectID, endpointI
 // cleanupK8sComputeResources 删除 endpoint 对应的 K8s Deployment 和 Service。
 // 失败不阻塞返回（best-effort）。
 func cleanupK8sComputeResources(endpointID string) {
-	if !cfg.EnableK8sCompute {
-		return
-	}
 	kc, err := newKubeClient()
 	if err != nil {
 		logWarn("deleteEndpoint %s: kube client: %v", endpointID, err)
@@ -1094,11 +1062,15 @@ func getComputeSpec(w http.ResponseWriter, r *http.Request, computeID string) {
 	}
 
 	// 确保 spec 中的页面服务器信息是最新的
-	// 如果 spec 为空或需要动态刷新，尝试从 SC locate 重建
 	// 始终确保返回的 spec 含最新的 cluster/settings（尤其是 listen_addresses）。
-	// 若缓存的 spec 为空或不含 listen_addresses，则基于当前配置重建；
+	// 触发重建的条件（任一）：
+	//   1) 缓存的 spec 为空 / 无 cluster 配置；
+	//   2) 缺少 listen_addresses（老 spec）；
+	//   3) **没有任何 pageserver 分片信息** —— 说明上次创建时 SC 尚未完成调度，
+	//      这里每次轮询都重试一次 locate，实现自愈（compute_ctl 本就周期性拉取 spec）。
 	// 否则复用缓存，避免每次请求都向 SC 发起 tenantLocate。
-	needRebuild := ep.Spec == nil || ep.Spec.Cluster == nil
+	needRebuild := ep.Spec == nil || ep.Spec.Cluster == nil ||
+		len(ep.Spec.PageserverConnectionInfo.Shards) == 0
 	if !needRebuild && ep.Spec.Cluster.Settings != nil {
 		hasListen := false
 		for _, o := range *ep.Spec.Cluster.Settings {
@@ -1111,7 +1083,15 @@ func getComputeSpec(w http.ResponseWriter, r *http.Request, computeID string) {
 	}
 	if needRebuild {
 		log.Printf("getComputeSpec %s: rebuilding spec", computeID)
-		ep.Spec = buildSpecFromEndpoint(ep)
+		spec, err := buildSpecFromEndpoint(ep)
+		if err != nil {
+			// SC 尚未完成调度 / 无 Active safekeeper：返回 503 让 compute_ctl 继续轮询重试，
+			// 绝不返回一份不完整的 spec（那会让 compute 连上错误的存储地址）。
+			logWarn("getComputeSpec %s: rebuild spec: %v", computeID, err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+			return
+		}
+		ep.Spec = spec
 	}
 
 	// 对齐 compute_ctl 的 ControlPlaneConfigResponse 反序列化结构：
@@ -1199,28 +1179,31 @@ func getJwks(w http.ResponseWriter, r *http.Request, endpoint string) {
 
 // buildSpecFromEndpoint 根据 endpoint 信息和当前配置重建 ComputeSpec。
 // 用于重启后或 notify 回调后按需重建 spec。
-func buildSpecFromEndpoint(ep *Endpoint) *ComputeSpec {
-	pageserverInfo := buildDefaultPageserverInfo()
-	safekeeperConns := buildDefaultSafekeeperConns()
+//
+// pageserver / safekeeper 地址只从 SC 动态获取；任一查询失败即返回 error，
+// 调用方（getComputeSpec）返回 503 让 compute_ctl 继续轮询，而不是下发不完整的 spec。
+func buildSpecFromEndpoint(ep *Endpoint) (*ComputeSpec, error) {
+	ctx := context.Background()
 
-	// 尝试从 SC 动态获取最新信息
-	if loc, err := sc.tenantLocate(context.Background(), ep.TenantID); err == nil {
-		pageserverInfo = PageserverConnInfo{
-			ShardCount: loc.ShardParams.ShardCount,
-			StripeSize: loc.ShardParams.StripeSize,
-			Shards:     buildShardsFromLocate(loc),
-		}
+	// 从 SC 动态获取最新信息（无静态兜底）
+	pageserverInfo, err := resolvePageserverInfo(ctx, ep.TenantID)
+	if err != nil {
+		return nil, err
 	}
-	if sks, err := sc.listSafekeepers(context.Background()); err == nil && len(sks) > 0 {
-		safekeeperConns = make([]string, 0, len(sks))
-		for _, sk := range sks {
-			safekeeperConns = append(safekeeperConns, fmt.Sprintf("%s:%d", sk.Host, sk.Port))
-		}
+	safekeeperConns, err := resolveSafekeeperConns(ctx)
+	if err != nil {
+		return nil, err
 	}
 
+	// 签发 storage token：失败时回退到 spec 里已有的 token（旧 token 通常仍在其有效期内）
 	tok, err := signer.signWithTenant("tenant", ep.TenantID)
 	if err != nil {
-		tok = ep.Spec.StorageAuthToken // 回退到已有 token
+		if ep.Spec != nil && ep.Spec.StorageAuthToken != "" {
+			tok = ep.Spec.StorageAuthToken
+			logWarn("buildSpecFromEndpoint %s: sign storage token failed: %v (reuse existing token)", ep.EndpointID, err)
+		} else {
+			return nil, fmt.Errorf("sign storage token: %w", err)
+		}
 	}
 
 	// 角色/数据库优先复用 endpoint 已持久化的 spec（含项目自定义的
@@ -1261,40 +1244,66 @@ func buildSpecFromEndpoint(ep *Endpoint) *ComputeSpec {
 				{Name: "listen_addresses", Value: strPtr("*"), Vartype: "string"},
 			},
 		},
-	}
+	}, nil
 }
 
-// buildDefaultPageserverInfo 使用静态配置构建 pageserver 连接信息（fallback 用）。
-// shard key 对齐 Rust ShardIndex::Display: "{:02x}{:02x}"（shard_number + shard_count_raw）。
-// 关键：compute_ctl 用 spec 中原始 shard_count 值构造 ShardIndex，不是归一化后的 num_shards。
-// unsharded (shard_count=0): ShardIndex(0,0) → key "0000"
-// 1 pageserver (shard_count=1): ShardIndex(0,1) → key "0001"
-func buildDefaultPageserverInfo() PageserverConnInfo {
-	shards := map[string]ShardInfo{}
-	// 对齐 compute_ctl: shard_count 使用 spec 原始值，与 ShardIndex.shard_count 一致
-	shardCount := len(cfg.Pageservers)
-	for i, ps := range cfg.Pageservers {
-		id := ps.ID
-		// ShardIndex key: 高字节=shard_number, 低字节=shard_count（原始 spec 值）
-		shardKey := fmt.Sprintf("%02x%02x", i, shardCount)
-		shards[shardKey] = ShardInfo{
-			Pageservers: []PageserverShard{{
-				ID:       &id,
-				LibpqURL: fmt.Sprintf("postgresql://%s:%d", ps.Host, ps.PGPort),
-				GRPCURL:  fmt.Sprintf("http://%s:%d", ps.Host, ps.HTTPPort),
-			}},
+// =============================================================================
+// 存储节点动态解析（唯一来源：storage controller）
+// =============================================================================
+
+// resolvePageserverInfo 通过 SC 的 tenant_locate 获取该租户的 pageserver 连接信息。
+//
+// 设计要点：
+//   - 不再有静态清单兜底。旧实现在 locate 失败时回落到 Helm 里写死的主机列表，
+//     会生成指向不存在节点的 ComputeSpec（compute 起不来且只有 WARN 日志，极难排查）；
+//   - locate 失败通常是"SC 尚未完成调度"，属于可重试的临时状态，调用方回 503 让客户端/compute_ctl 重试。
+func resolvePageserverInfo(ctx context.Context, tenantID string) (PageserverConnInfo, error) {
+	loc, err := sc.tenantLocate(ctx, tenantID)
+	if err != nil {
+		// 补充一次节点查询，帮助判断是"SC 不可用"还是"集群里根本没有 pageserver"
+		if nodes, nerr := sc.listNodes(ctx); nerr == nil {
+			var active int
+			for _, n := range nodes {
+				if n.Scheduling == "Active" {
+					active++
+				}
+			}
+			return PageserverConnInfo{}, fmt.Errorf(
+				"locate tenant %s failed: %v (SC 中已注册 %d 个 pageserver，其中 %d 个 Active)",
+				tenantID, err, len(nodes), active)
 		}
+		return PageserverConnInfo{}, fmt.Errorf("locate tenant %s failed: %w", tenantID, err)
 	}
-	return PageserverConnInfo{ShardCount: shardCount, StripeSize: 0, Shards: shards}
+	shards := buildShardsFromLocate(loc)
+	if len(shards) == 0 {
+		return PageserverConnInfo{}, fmt.Errorf(
+			"locate tenant %s 未返回任何 shard：SC 可能尚未完成调度（pageserver 是否已自注册且 Active）", tenantID)
+	}
+	return PageserverConnInfo{
+		ShardCount: loc.ShardParams.ShardCount,
+		StripeSize: loc.ShardParams.StripeSize,
+		Shards:     shards,
+	}, nil
 }
 
-// buildDefaultSafekeeperConns 使用静态配置构建 safekeeper 连接串列表（fallback 用）。
-func buildDefaultSafekeeperConns() []string {
-	conns := make([]string, 0, len(cfg.Safekeepers))
-	for _, sk := range cfg.Safekeepers {
-		conns = append(conns, fmt.Sprintf("%s:%d", sk.Host, sk.PGPort))
+// resolveSafekeeperConns 从 SC 获取 Active safekeeper 的连接串列表（host:port）。
+//
+// 注意：safekeeper 必须由 sk-register sidecar upsert **并显式激活**后才会出现在这里
+// （SC 的 upsert 默认把 scheduling_policy 置为 Activating，get_safekeepers 只返回 Active）。
+// 没有 Active 节点时返回错误，而不是回退到静态清单。
+func resolveSafekeeperConns(ctx context.Context) ([]string, error) {
+	sks, err := sc.listSafekeepers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list active safekeepers failed: %w", err)
 	}
-	return conns
+	if len(sks) == 0 {
+		return nil, fmt.Errorf("SC 中没有 Active 的 safekeeper（需由 sk-register sidecar 注册并激活，生产环境建议 >= 3 个）")
+	}
+	conns := make([]string, 0, len(sks))
+	for _, sk := range sks {
+		conns = append(conns, fmt.Sprintf("%s:%d", sk.Host, sk.Port))
+	}
+	return conns, nil
 }
 
 // writeJSON 写 JSON 响应。

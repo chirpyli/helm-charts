@@ -15,11 +15,9 @@ Neon 生产级部署已就绪（umbrella: {{ .Chart.Name }} / release: {{ .Relea
     --set global.jwt.controlPlaneJwtToken=<tok> --set global.jwt.peerJwtToken=<tok>
 
 验证端到端：
-  # 创建 project / branch / endpoint（控制面返回 ComputeSpec）
+  # 创建 project / branch / endpoint（控制面返回 ComputeSpec，并按需动态拉起 compute）
   kubectl exec deploy/neon-control-plane-svc -- curl -s localhost:8080/projects -X POST
-  # phase-1 直连 compute（client → compute Service）
-  psql "postgresql://cloud_admin@<neon-compute-svc>:5432/postgres?sslmode=disable"
 
 组件服务名（release=neon 时）：
   neon-broker-svc:50051  neon-storage-controller-svc:50051  neon-control-plane-svc:8080
-  neon-pageserver-svc:64000/9898  neon-safekeeper-svc:5454/7676  neon-compute-svc:5432
+  neon-pageserver-svc:64000/9898  neon-safekeeper-svc:5454/7676

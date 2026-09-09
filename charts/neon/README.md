@@ -2,14 +2,13 @@
 
 ![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) [![Lint and Test Charts](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml/badge.svg)](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml)
 
-Neon 生产级完整部署 umbrella chart — 一键部署 Neon 全栈（broker / storage-controller / pageserver / safekeeper / control-plane / compute）。
+Neon完整部署 umbrella chart — 一键部署Neon服务。
 
-**Homepage:** https://neon.tech
 
 ## Source Code
 
 * [https://github.com/neondatabase/neon](https://github.com/neondatabase/neon)
-* [https://github.com/neondatabase/helm-charts](https://github.com/neondatabase/helm-charts)
+
 
 ## 简介
 
@@ -22,57 +21,7 @@ Neon 生产级完整部署 umbrella chart — 一键部署 Neon 全栈（broker 
 | `neon-pageserver`         | StatefulSet | 有状态存储节点（物化 tenant 层数据）         | ✅ 启用     |
 | `neon-safekeeper`         | StatefulSet | 有状态 WAL 多副本存储                        | ✅ 启用     |
 | `neon-control-plane`      | Deployment  | 最小控制面（project/endpoint API）           | ✅ 启用     |
-| `neon-compute`            | Deployment  | 静态示例 compute 节点（回退/演示，默认关闭） | ❌ 默认关闭 |
-| `neon-proxy`              | —          | phase-2 可选，默认不启用                     | ❌ 禁用     |
 
-## 部署前提（必读）
-
-部署前需自行准备以下外部依赖（**chart 不提供，必须自备**）：
-
-### 1. 外部 PostgreSQL（storage-controller 元数据）
-
-创建数据库和用户，填写连接串到 values：
-
-```yaml
-neon-storage-controller:
-  settings:
-    databaseUrl: "postgres://storage_controller:password@pg-host:5432/storage_controller"
-```
-
-storage-controller 启动时会自动建表/迁移。
-
-### 2. 外部 MinIO / S3（对象存储）
-
-在目标命名空间创建 Secret：
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: bucket-credentials
-stringData:
-  AWS_ACCESS_KEY_ID: "minioadmin"
-  AWS_ENDPOINT_URL: "http://minio-host:9000"
-  AWS_REGION: "us-east-1"
-  AWS_SECRET_ACCESS_KEY: "minioadmin"
-  BUCKET_NAME: "neondata"
-```
-
-### 3. Ed25519 密钥对（JWT）
-
-自签密钥对并填充到 values：
-
-```bash
-# 生成密钥对
-openssl genpkey -algorithm ed25519 -out privateKey.pem
-openssl pkey -in privateKey.pem -pubout -out publicKey.pem
-
-# 读取内容（用于 values 注入）
-cat privateKey.pem   # → global.jwt.privateKey
-cat publicKey.pem    # → global.jwt.publicKey
-```
-
-JWT tokens 各 scope 由 control plane 签发，values 中以任意非空字符串占位即可（SC 仅校验签名，不校验签发者）。
 
 ## 安装
 
@@ -89,6 +38,30 @@ $ cd charts/neon
 $ helm dependency build .
 $ helm install neon . -n neon -f my-values.yaml
 ```
+
+### 部署前置：为节点打可用区（AZ）标签
+
+pageserver / safekeeper 的可用区**不再由 values 静态指定**，而是在 Pod 启动时由 init 容器通过
+kube-apiserver 读取**所在节点**的 `topology.kubernetes.io/zone` 标签动态获取（需要 `nodes: get` 权限，
+默认由各子 chart 的 `rbac.nodeReader.enabled` 自动创建 ClusterRole/ClusterRoleBinding）。
+
+因此部署前必须给每个会运行 pageserver / safekeeper 的节点打上该标签，否则对应 Pod 会停在 Init 状态并输出告警日志：
+
+```console
+# 查看节点当前是否已有 zone 标签
+kubectl get nodes -L topology.kubernetes.io/zone
+
+# 为每个节点打标签（把 <az> 换成实际可用区名，如 az1 / cn-north-1a）
+kubectl label node <node-name> topology.kubernetes.io/zone=<az> --overwrite
+```
+
+> 💡 说明：
+>
+> - 多可用区集群中，同一份 chart 部署出来的不同 Pod 会自动获得各自节点的真实 AZ；
+>   storage controller 会据此做时间线放置与 pageserver↔safekeeper 的同区优选。
+> - 若集群由平台方统一授权（不想由 Helm 创建集群级 RBAC），可将
+>   `neon-pageserver.rbac.nodeReader.enabled` / `neon-safekeeper.rbac.nodeReader.enabled` 置为 `false`，
+>   但必须自行保证对应 ServiceAccount 具备 `nodes: get` 权限。
 
 ## 更新
 
@@ -112,7 +85,7 @@ $ helm upgrade neon neon-0.1.0.tgz -n neon -f my-values.yaml
 > - 涉及子 chart 镜像、模板（templates）改动时，务必先 `helm dependency build .` 重新打包，否则 `helm upgrade` 仍会使用已缓存的旧依赖。
 > - 使用 `--reuse-values` 可在不提供完整 values 文件时，仅覆盖个别字段：
 >   ```console
->   helm upgrade neon . -n neon --reuse-values --set neon-pageserver.settings.availabilityZone=az2
+>   helm upgrade neon . -n neon --reuse-values --set neon-pageserver.statefulSet.replicas=3
 >   ```
 
 ## 卸载
@@ -120,7 +93,9 @@ $ helm upgrade neon neon-0.1.0.tgz -n neon -f my-values.yaml
 使用 `helm uninstall` 移除 release。**注意：Helm 不会自动删除 PVC（持久卷）**，需手动清理，否则重新安装可能复用残留数据：
 
 ```console
-# 1. 卸载 release
+# 1. 卸载 release（neon-control-plane 内置 pre-delete 钩子，会自动清理控制面动态创建的
+#    compute Deployment/Service/Pod（标签 app.kubernetes.io/name=neon-compute）
+#    与状态 ConfigMap neon-cp-state；使用 --no-hooks 会跳过该清理）
 $ helm uninstall neon -n neon
 
 # 2. （可选）清理残留 PVC
@@ -145,7 +120,7 @@ client → compute(postgres)  # 直连 compute Service
 ```
 
 - client 使用 control plane 生成的 SCRAM 密码直连 compute
-- neon-control-plane 在启动时完成 bootstrap 与节点注册
+- pageserver / safekeeper 自注册到 storage controller，控制面启动时只读取（无 bootstrap、无默认租户）
 - 创建 endpoint 时 control plane 生成 ComputeSpec 并动态拉起 compute Pod
 
 ## 部署后验证
@@ -251,7 +226,7 @@ Kubernetes: `^1.18.x-x`
 | neon-pageserver.statefulSet.storage.size              | string | `"5Gi"`                                      | PVC 大小（测试环境） |
 | neon-pageserver.settings.brokerEndpoint               | string | `"http://neon-broker-svc:50051"`             | broker 地址          |
 | neon-pageserver.settings.storageControllerUrl         | string | `"http://neon-storage-controller-svc:50051"` | SC 地址              |
-| neon-pageserver.settings.availabilityZone             | string | `"az1"`                                      | 可用区               |
+| neon-pageserver.rbac.nodeReader.enabled               | bool   | `true`                                       | 是否创建读取节点 zone 标签的 RBAC（nodes: get） |
 | neon-pageserver.settings.remoteStorage.bucketName     | string | `"neondata"`                                 | bucket 名            |
 | neon-pageserver.settings.remoteStorage.bucketRegion   | string | `"us-east-1"`                                | region               |
 | neon-pageserver.settings.remoteStorage.endpoint       | string | `"http://192.168.232.128:9000"`              | MinIO/S3 endpoint    |
@@ -269,7 +244,7 @@ Kubernetes: `^1.18.x-x`
 | neon-safekeeper.statefulSet.resources.requests.memory | string | `"256Mi"`                        | 内存请求                     |
 | neon-safekeeper.statefulSet.storage.size              | string | `"2Gi"`                          | PVC 大小（测试环境）         |
 | neon-safekeeper.settings.brokerEndpoint               | string | `"http://neon-broker-svc:50051"` | broker 地址                  |
-| neon-safekeeper.settings.availabilityZone             | string | `"az1"`                          | 可用区                       |
+| neon-safekeeper.rbac.nodeReader.enabled               | bool   | `true`                           | 是否创建读取节点 zone 标签的 RBAC（nodes: get） |
 | neon-safekeeper.settings.statefulSet.replicas         | int    | `3`                              | 副本数（奇数，SC 要求 >= 3） |
 
 ### neon-control-plane
@@ -286,20 +261,7 @@ Kubernetes: `^1.18.x-x`
 | neon-control-plane.settings.listenPort           | int    | `8080`                                       | 监听端口                      |
 | neon-control-plane.settings.defaultTenantId      | string | `"3d1f7595b468230304e0b73cecbcb081"`         | 默认租户 id                   |
 | neon-control-plane.settings.computeImage         | string | `"neondatabase/neon:latest"`                 | compute 镜像                  |
-| neon-control-plane.settings.enableK8sCompute     | bool   | `false`                                      | 是否启用 K8s 动态拉起 compute |
 | neon-control-plane.settings.domain               | string | `"neon.local"`                               | proxy 兼容接口域名（phase-2） |
-
-### neon-compute
-
-| Key                                    | Type   | Default                                           | Description                                             |
-| -------------------------------------- | ------ | ------------------------------------------------- | ------------------------------------------------------- |
-| neon-compute.enabled                   | bool   | `false`                                         | 是否启用（生产由 control plane 动态拉起，此处默认关闭） |
-| neon-compute.nameOverride              | string | `"compute"`                                     | 覆盖 name                                               |
-| neon-compute.resources.limits.cpu      | string | `"500m"`                                        | CPU 上限（测试环境）                                    |
-| neon-compute.resources.limits.memory   | string | `"512Mi"`                                       | 内存上限（测试环境）                                    |
-| neon-compute.resources.requests.cpu    | string | `"500m"`                                        | CPU 请求                                                |
-| neon-compute.resources.requests.memory | string | `"512Mi"`                                       | 内存请求                                                |
-| neon-compute.settings.connstr          | string | `"postgresql://cloud_admin@localhost/postgres"` | compute 连接串                                          |
 
 ---
 

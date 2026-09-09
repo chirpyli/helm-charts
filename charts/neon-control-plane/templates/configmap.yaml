@@ -6,25 +6,13 @@ metadata:
     {{- include "neon-control-plane.labels" . | nindent 4 }}
 data:
   # 控制面运行配置（Go 服务以 --config 读取此 JSON）
+  # 注意：不再包含 pageservers / safekeepers 节点清单与 default_tenant_id：
+  # 节点由各组件自注册进 storage controller，控制面运行时只查询（SC 为唯一真相源）。
   config.json: |
     {
       "storage_controller_url": "{{ .Values.settings.storageControllerUrl }}",
       "listen_port": {{ .Values.settings.listenPort }},
-      "default_tenant_id": "{{ .Values.settings.defaultTenantId }}",
-      "pageservers": [
-        {{- range $i, $ps := .Values.settings.pageservers }}
-        {{- if $i }},{{ end }}
-        { "id": {{ $ps.id }}, "host": "{{ $ps.host }}", "pg_port": {{ $ps.pgPort }}, "http_port": {{ $ps.httpPort }} }
-        {{- end }}
-      ],
-      "safekeepers": [
-        {{- range $i, $sk := .Values.settings.safekeepers }}
-        {{- if $i }},{{ end }}
-        { "id": {{ $sk.id }}, "host": "{{ $sk.host }}", "pg_port": {{ $sk.pgPort }}, "http_port": {{ $sk.httpPort }} }
-        {{- end }}
-      ],
       "compute_image": "{{ .Values.settings.computeImage }}",
-      "enable_k8s_compute": {{ .Values.settings.enableK8sCompute }},
       "compute_service_type": "{{ .Values.settings.computeServiceType }}",
       "node_port_external_host": "{{ .Values.settings.nodePortExternalHost }}",
       "domain": "{{ .Values.settings.domain }}"

@@ -14,8 +14,8 @@ dependencies:
 - name: neon-control-plane
   repository: file://../neon-control-plane
   version: 0.1.0
-- name: neon-compute
-  repository: file://../neon-compute
+- name: local-path-provisioner
+  repository: file://../local-path-provisioner
   version: 0.1.0
-digest: sha256:21c1440a956d96ab5cdaba993d68d9be89bad19f51e90c92b4aeb69e2a88752a
-generated: "2026-07-11T09:36:23.584024443+08:00"
+digest: sha256:e131dc3de2328c2556c1acc9836fd6ee76047df88b0a7b340d3289bb1c41744f
+generated: "2026-09-08T20:05:37.962066519+08:00"

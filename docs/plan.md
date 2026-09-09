@@ -67,7 +67,7 @@ stringData:
 - 有状态组件（pageserver/safekeeper）用 StatefulSet + PVC，保证 Pod 重建后数据不丢失、网络标识稳定（稳定的 DNS）。
 - 控制面（`neon-control-plane`）是一个**常驻最小服务**：服务内部聚合了 bootstrap 逻辑与精简用户 API。它在启动时幂等地调用 storage-controller 的 `/control/v1/node`、`/control/v1/safekeeper`、`/control/v1/tenant` 完成节点注册与租户/时间线创建；运行时对外提供 `POST /projects`、`POST /projects/{id}/branches`、`POST /projects/{id}/endpoints` 等核心 API，并经 storage-controller 完成 pageserver/safekeeper 调度。参考 neon 源码 `control_plane`（即 `neon_local`，本地开发编排工具，**非生产控制面**）的实际调用路径与 `storage_controller/src/http.rs` 的 `/control/v1/*` REST 接口。
 - 存储后端为外部 MinIO（S3 兼容），凭证由 `bucket-credentials` Secret 提供，chart 通过 values 透传 endpoint/bucket/region/密钥，不内建对象存储。
-- compute（计算节点）由 control plane 在创建 endpoint 时**动态拉起**：control plane 生成 `ComputeSpec` 并通过 in-cluster K8s API 为 endpoint 创建一个 compute Deployment（`compute_ctl` 从 control plane 拉取 spec）。`neon-compute` chart 作为静态/演示回退（预部署一个默认 compute），二者并存。
+- compute（计算节点）**仅**由 control plane 在创建 endpoint 时**动态拉起**：control plane 生成 `ComputeSpec` 并通过 in-cluster K8s API 为 endpoint 创建一个 compute Deployment（`compute_ctl` 从 control plane 拉取 spec）。umbrella 不再内置静态 `neon-compute` chart（该 chart 已移除），集群内不存在预部署的默认 compute。
 
 ### 关键技术决策
 
@@ -152,7 +152,7 @@ stringData:
      `compute_ctl -C postgresql://cloud_admin@localhost/postgres --control-plane-uri http://neon-control-plane:<port> --compute-id <endpoint_id> --pgdata /var/db/postgres/data --pgbin /usr/lib/postgresql/<ver>/bin/postgres --external-http-port 3080`
      （`--connstr`/`-C` 必填；`-p/--control-plane-uri` 与 `-c/--config` 互斥，选前者时必带 `-i/--compute-id`；`--external-http-port` 默认 3080）
    - `compute_ctl` 周期性向 `GET <cp>/compute/api/v2/computes/<compute_id>/spec` 拉取第 5 步的 spec（路径源自 `compute_tools/src/spec.rs:78`：`{base_uri}/compute/api/v2/computes/{compute_id}/spec`，故 `--control-plane-uri` 传控制面**根地址**即可）。
-   - **备选（静态回退）**：把 spec 写入 `neon-endpoint-storage`(S3) 或 ConfigMap，`neon-compute` chart 以 `--config /spec.json` 文件方式加载。v1 主路径采用 K8s Deployment 动态管理（最贴近真实控制面），`neon-compute` 作为无 K8s 写权限环境下的回退。
+   - **备选（已废弃，不再提供）**：原计划把 spec 写入 `neon-endpoint-storage`(S3) 或 ConfigMap，由静态 `neon-compute` chart 以 `--config /spec.json` 文件方式加载（作为无 K8s 写权限环境下的回退）。该 chart 已从 umbrella 中移除，v1 **只有** K8s Deployment 动态管理这一条路径。
 
 #### Proxy 兼容接口（proxy 路由必需，严格对齐 `proxy/src/control_plane/client/cplane_proxy_v1.rs` 与 `messages.rs`）
 
@@ -165,14 +165,28 @@ proxy 的 `NeonControlPlaneClient` 在每次连接时调用以下接口（proxy 
 
 > 实现时必须严格对齐 `messages.rs` 的 `WakeCompute` / `GetEndpointAccessControl` / `EndpointJwksResponse` 字段名与类型（如 `cold_start_info` 用 `snake_case`：`unknown`/`warm`/`warm_cached`；`address` 为 `host:port` 字符串）。proxy 对这些接口的路径/字段有强约定，错一个字段即鉴权或路由失败。
 
-#### Bootstrap 流程（服务内一次性 init，幂等，源自 `neon_local` 实际调用）
+#### 节点注册：无 Bootstrap，各组件自注册（当前实现）
 
-按依赖顺序（与 `control_plane/src/storage_controller.rs` 一致）：
+控制面**不做任何节点注册、也不创建默认租户**（原 bootstrap 已移除）。原因：
 
-1. **注册每个 pageserver 节点**：`POST <sc>/control/v1/node`（body `NodeRegisterRequest { node_id, listen_pg_addr, listen_pg_port(64000), listen_http_addr, listen_http_port(9898), listen_grpc_addr/port?, availability_zone_id }`）
-2. **注册每个 safekeeper 节点并设为 Active**：`POST <sc>/control/v1/safekeeper/{id}`（SafekeeperUpsert，body 见下）+ `POST <sc>/control/v1/safekeeper/{id}/scheduling_policy`（`SafekeeperSchedulingPolicyRequest { scheduling_policy:"Active" }`）
-3. **创建默认租户**：`POST <sc>/v1/tenant`（**注意：是 `v1/tenant`，不是 `control/v1/tenant`**；body `TenantCreateRequest { new_tenant_id, shard_parameters(默认单分片 unsharded), config }`）
-4. **创建初始时间线（branch）**：`POST <sc>/v1/tenant/{tid}/timeline`（由 SC 转发到对应 pageserver shard 0，body `TimelineCreateRequest { new_timeline_id }`）
+- pageserver 启动时 `POST <sc>/upcall/v1/re-attach` 会携带 `NodeRegisterRequest` 自注册
+  （`pageserver/src/controller_upcall_client.rs` 读取 `metadata.json` 构造，SC 侧 `re_attach()` 内部调 `node_register`）；
+  `metadata.json` 由 `neon-pageserver` 的 init 容器生成，含 `node_id = nodeIdBase + ordinal`、完整 FQDN 与 pg/http/https/grpc 端口。
+- safekeeper 由 `neon-safekeeper` 的 `sk-register` sidecar 注册：`POST <sc>/control/v1/safekeeper/{id}`（SafekeeperUpsert）
+  + `POST <sc>/control/v1/safekeeper/{id}/scheduling_policy`（`{"scheduling_policy":"Active"}`，**注意是首字母大写的变体名**，
+  上游 `SkSchedulingPolicy` 的 serde 未做 rename，小写会被 400 拒收），并周期对账、终止时置 `Decomissioned`。
+- 控制面若再注册一遍会出现双写者：同 id 不同地址会被 SC 判 409（`service.rs` 的 `RegistrationStatus::Mismatched`），
+  且静态清单无法感知副本数变化、node id 规则还与子 chart 的 `nodeIdBase + ordinal` 重复定义。
+
+控制面只在运行时**只读查询** SC：
+
+- `GET <sc>/control/v1/node`：启动诊断与错误信息增强
+- `GET <sc>/control/v1/safekeeper`：取 Active safekeeper 列表（SC 的 `get_safekeepers()` 只返回 `Active`）
+- `GET <sc>/debug/v1/tenant/{id}/locate`：定位该 tenant 的 pageserver 分片
+
+tenant / timeline 一律由 `POST /projects` 按需创建（每个 project 独占 tenant），**不再有默认租户**；
+创建 endpoint 时若 SC 尚未完成调度或无 Active safekeeper，控制面返回 **503**（不下发坏 spec），
+由 compute_ctl 周期性拉取 `GET /compute/api/v2/computes/{id}/spec` 自愈。
 
 > **已核对 `control_plane/src/storage_controller.rs`（neon_local 真实调用）**：
 > - `node_register` → `POST control/v1/node`；`node_configure` → `PUT control/v1/node/{id}/config`；`node_list` → `GET control/v1/node`
@@ -225,7 +239,7 @@ proxy 的 `NeonControlPlaneClient` 在每次连接时调用以下接口（proxy 
 
 **实现 compute_hook（远程模式）需要做哪些工作？**
 1. **control plane 新增两个 HTTP 端点（PUT）**：`/notify-attach`、`/notify-safekeepers`；校验 `Authorization: Bearer <token>` 且 scope=ControlPlane（与 SC `--control-plane-jwt-token` 同源私钥签发，control plane 用同一公钥验证）；body 反序列化复用 `pageserver_api::upcall_api` / `compute_api` 的对应结构（如 `NotifyReAttachRequest`、`NotifySafekeepersRequest`）以保持二进制兼容。
-2. **维护 running compute 路由表（核心难点）**：control plane 需记录 `tenant_id → running compute 的 compute_ctl 地址（默认 :3080）`。动态拉起时由 endpoint 创建流程记录 Pod IP；静态 `neon-compute` 经 values 配置固定映射；随 compute 生命周期增删。
+2. **维护 running compute 路由表（核心难点）**：control plane 需记录 `tenant_id → running compute 的 compute_ctl 地址（默认 :3080）`。compute 均为动态拉起，由 endpoint 创建流程记录 Pod IP；随 compute 生命周期增删。
 3. **转发逻辑（迷你 console）**：收到 notify 后，把"pageserver/safekeeper 路由变化"转成 compute 能理解的 `ConfigurationRequest`（ComputeSpec 更新），`POST http://<compute>:3080/configure`（compute_ctl 的 `configure` 端点，已有 `reconfigure()` 自愈）。这要求 control plane 持有并能在通知时重建该 tenant 的 ComputeSpec 模板——逻辑量与 Neon console 一致。
 4. **compute 侧可达性**：compute 的 `:3080` 需对 control plane 可达（Service 暴露）；动态 compute 由 control plane 直连 Pod IP。
 5. **SC 配置变更**：storage_controller chart 移除 `--use-local-compute-notifications`，改为 `--control-plane-url=http://<neon-control-plane>:<port>` + `--control-plane-jwt-token`。此时 SC 进入远程通知模式（strict 模式允许且强制要求 control_plane_url，同时禁止 local）。
@@ -235,7 +249,7 @@ proxy 的 `NeonControlPlaneClient` 在每次连接时调用以下接口（proxy 
 
 **本次部署决策**：
 - SC **始终**以严格模式运行并配置 `--control-plane-url=http://neon-control-plane:<port>`（必填，否则启动即 `bail`）。compute notification 的**接收端点**（`/notify-attach`、`/notify-safekeepers`）列为 **phase-2**：phase-1 未实现，SC 通知请求失败时仅重试、非致命，pageserver→SC upcall 正常启用。
-- 单 pageserver（replicas=1、未启用 `pageserverAutoMigration`）+ 静态 `neon-compute` 下，存储故障转移极少触发；即便触发，compute 经重连 + `compute_ctl reconfigure()` 自愈通常可恢复，不影响基本可用。
+- 单 pageserver（replicas=1、未启用 `pageserverAutoMigration`）+ 动态拉起 compute 下，存储故障转移极少触发；即便触发，compute 经重连 + `compute_ctl reconfigure()` 自愈通常可恢复，不影响基本可用。
 - **后续扩展点**：上生产多 pageserver + 自动迁移时，再实现 1.5 节上述 1–6 启用远程通知端点。本次不实现端点，但始终保持 `--control-plane-url` 已配置（避免回头改启动参数引发 SC 重启）。
 
 ### 1.6 Proxy 运行条件与正确性校验（必读，决定 proxy 能否真正可用）
@@ -296,14 +310,12 @@ graph TD
   U -->|依赖编排| PS[neon-pageserver 有状态]
   U -->|依赖编排| SK[neon-safekeeper 有状态]
   U -->|依赖编排| CP[neon-control-plane 服务]
-  U -->|依赖编排| CM[neon-compute 静态回退]
   CP -->|bootstrap: 注册节点/建租户| SC
   CP -->|创建tenant/时间线/定位| SC
   CP -->|创建compute Deployment| K8S[(K8s API)]
   K8S -->|拉起| CM2[compute Pod: compute_ctl]
   CP -.->|phase-2: console兼容接口 鉴权/寻址| PX
   PX -.->|phase-2 路由连接| CM2
-  PX -.->|phase-2 路由连接| CM
   SC -->|心跳/调度| PS
   SC -->|心跳/调度| SK
   SC -->|节点/租户/分片元数据持久化| PG[(外部 PostgreSQL 元数据)]
@@ -318,7 +330,7 @@ graph TD
 
 ### 分阶段实施（phase-1 先跑通，phase-2 再叠加 proxy）
 
-- **phase-1（本期实现，默认部署）**：`neon-storage-broker` + `neon-storage-controller` + `neon-pageserver` + `neon-safekeeper` + `neon-minio` + `neon-control-plane` + `neon-compute` + umbrella。client **直连 compute Service** 验证端到端读写，proxy 不部署。
+- **phase-1（本期实现，默认部署）**：`neon-storage-broker` + `neon-storage-controller` + `neon-pageserver` + `neon-safekeeper` + `neon-minio` + `neon-control-plane` + umbrella（compute 不由 umbrella 部署，由 control plane 动态拉起）。client **直连 compute Service** 验证端到端读写，proxy 不部署。
 - **phase-2（后续分步实现，默认不启用）**：启用 `neon-proxy`（umbrella `neon-proxy.enabled=true`）+ 控制面实现 proxy 兼容接口（`wake_compute` / `get_endpoint_access_control` / `endpoints/{id}/jwks`）+ 补齐 TLS/SNI/内部 CA（见 1.6 节）。启用后 client 改为 `<endpoint_id>.<domain>:5432` 经 proxy 路由。
 
 > 控制面 chart 可预先把 proxy 兼容接口的占位/桩留在 `main.go`，但 phase-1 不要求联调；proxy 的三大前置条件（backend=`ControlPlane`、TLS 两处、SNI/DNS）仅在 phase-2 才需落实（详见 1.6 节）。
@@ -378,13 +390,6 @@ charts/
 │       ├── configmap.yaml                 # [NEW] 服务配置（SC 地址、节点清单、JWT 引用、ComputeSpec 模板）
 │       ├── serviceaccount.yaml            # [NEW] RBAC/SA + ClusterRole（pods/deployments/services 的增删查，限本 ns）
 │       └── servicemonitor.yaml            # [NEW] 服务指标
-├── neon-compute/                          # [NEW] 静态/演示 compute 回退 chart（--config 文件方式加载 spec，无 K8s 写权限环境用）
-│   ├── Chart.yaml
-│   ├── values.yaml                        # [NEW] 含 postgres 版本、computeImage、连接 safekeeper/proxy 示例、ComputeSpec 来源（S3/ConfigMap）
-│   └── templates/
-│       ├── _helpers.tpl
-│       ├── deployment.yaml                # [NEW] 示例 postgres compute（compute_ctl --config /spec.json）
-│       └── service.yaml
 └── (复用不改) neon-storage-broker / neon-storage-controller  # 通过 umbrella 依赖引用；neon-proxy 复用但列为 phase-2（umbrella condition 默认 false，不启用）
 ```
 
@@ -415,7 +420,10 @@ control_plane_api_token = "<SC→PS 的 PageServerApi JWT>"   # 建议经 Secret
 auth_validation_public_key_path = "/etc/neon/jwt/public_key.pem"
 http_auth_type = "NeonJWT"
 pg_auth_type   = "NeonJWT"
-availability_zone = "az1"
+
+# 可用区：不在 values/ConfigMap 中静态指定，由 init 容器在 Pod 启动时读取所在节点的
+# topology.kubernetes.io/zone 标签动态探测后追加写入本文件（见 charts/neon-pageserver/templates/statefulset.yaml）
+availability_zone = "<运行时探测的节点 zone>"
 ```
 
 - **`identity.toml`**（同 workdir，每 pod 唯一）：`id = <NodeId>`（整数），是 node id 唯一真实来源，须与 SC `POST control/v1/node` 的 `node_id` 对应；建议 `id = base + statefulsetOrdinal`。
@@ -432,9 +440,10 @@ safekeeper -D /var/lib/safekeeper \
   --listen-http 0.0.0.0:7676 \
   --broker-endpoint http://<storage-broker>:50051 \
   --pg-auth-public-key-path /etc/neon/jwt/public_key.pem \
-  --availability-zone az1
+  --availability-zone "$(cat /etc/neon/availability-zone)"
 # --id 写入 safekeeper.id；每 pod 唯一（base + ordinal）
 # --pg-auth-public-key-path：WAL 服务（pageserver/compute 连 safekeeper）JWT 公钥
+# --availability-zone：同样不静态指定，取 init 容器从节点 topology.kubernetes.io/zone 标签探测后写入 /etc/neon/availability-zone 的值
 ```
 
 ### storage_controller（必填 `--listen` 与 `--database-url`，**不连接 storage_broker**）

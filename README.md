@@ -2,7 +2,7 @@
 
 [![许可证](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-本项目供学习Neon使用，不提供生产级代码。
+本项目供学习Neon使用。
 
 ## 使用方法
 

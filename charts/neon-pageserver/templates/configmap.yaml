@@ -21,14 +21,20 @@ data:
 
     # storage_controller upcall 基址（运行时强制必填；pageserver 会 .join("re-attach") 拼接路径，故必须带 /upcall/v1 前缀）
     control_plane_api       = "{{ .Values.settings.storageControllerUrl }}/upcall/v1"
-    # SC→PS 的 PageServerApi JWT（优先取 umbrella global.jwt.pageserverJwtToken，回退 settings.storageControllerApiToken；建议通过 --set 注入，勿提交明文）
+    # PS→SC upcall 的 JWT：必须是 generations_api scope
+    # （SC 的 upcall_v1_re-attach / validate 均执行 check_permissions(Scope::GenerationsApi)，见 storage_controller/src/http.rs），
+    # 不是 PageServerApi（pageserverJwtToken 是 SC→PS 方向用的，填这里会导致 upcall 401）。
+    # 取值优先级：settings.storageControllerApiToken（独立部署时填写）> global.jwt.generationsApiJwtToken（umbrella 统一注入）；建议通过 --set 注入，勿提交明文
     control_plane_api_token = "{{ .Values.settings.storageControllerApiToken | default (dig "jwt" "generationsApiJwtToken" "" .Values.global) }}"
 
     # JWT 校验公钥（由各 chart 统一挂载的 Secret 提供，非 TOML 内联）
     auth_validation_public_key_path = "/etc/neon/jwt/publicKey.pem"
     http_auth_type = "NeonJWT"
     pg_auth_type   = "NeonJWT"
-    availability_zone = "{{ .Values.settings.availabilityZone }}"
+
+    # 注意：这里不再写 availability_zone。
+    # 可用区必须在 Pod 启动时从所在节点的 topology.kubernetes.io/zone 标签动态探测，
+    # 由 init-identity 容器复制本模板并追加 availability_zone 后生成最终的 pageserver.toml。
 
     # PostgreSQL 二进制（initdb / postgres）所在根目录；pageserver 据此拼出
     # <pg_distrib_dir>/v<major>/bin 与 <pg_distrib_dir>/v<major>/lib。

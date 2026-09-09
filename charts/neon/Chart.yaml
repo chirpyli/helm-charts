@@ -1,6 +1,6 @@
 apiVersion: v2
 name: neon
-description: Neon 生产级完整部署 umbrella（broker / storage-controller / pageserver / safekeeper / control-plane / compute）
+description: Neon deployment
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
@@ -29,7 +29,7 @@ dependencies:
     repository: "file://../neon-control-plane"
     version: "*"
     condition: neon-control-plane.enabled
-  - name: neon-compute
-    repository: "file://../neon-compute"
+  - name: local-path-provisioner
+    repository: "file://../local-path-provisioner"
     version: "*"
-    condition: neon-compute.enabled
+    condition: local-path-provisioner.enabled

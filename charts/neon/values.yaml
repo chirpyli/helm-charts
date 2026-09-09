@@ -7,6 +7,9 @@
 #   4) 各 scope 的 JWT（均置于 global.jwt 下）：pageserverJwtToken / safekeeperJwtToken /
 #      controlPlaneJwtToken / peerJwtToken / computeJwtToken / generationsApiJwtToken。
 #      storage-controller 的 settings 同名项留空即可自动从 global.jwt 继承，无需重复填写。
+#   5) 每个会运行 pageserver / safekeeper 的 k8s 节点必须带可用区标签：
+#      kubectl label node <node> topology.kubernetes.io/zone=<az> --overwrite
+#      可用区不再由 values 静态指定，Pod 启动时会动态读取所在节点的该标签；缺失则 Pod 停在 Init 状态。
 # 生成示例（自签，仅演示）：
 #   openssl genpkey -algorithm ed25519 -out privateKey.pem
 #   openssl pkey -in privateKey.pem -pubout -out publicKey.pem
@@ -43,7 +46,6 @@ global:
 neon-storage-broker:
   enabled: true
   nameOverride: "broker-svc"
-  # 测试环境资源调低（生产建议 CPU >= 1 / 内存 >= 2Gi / limits >= 8Gi）
   resources:
     limits:
       memory: 256Mi
@@ -54,7 +56,6 @@ neon-storage-broker:
 neon-storage-controller:
   enabled: true
   nameOverride: "storage-controller"
-  # 测试环境资源调低（生产建议 CPU >= 2 / 内存 >= 4Gi）
   resources:
     limits:
       cpu: "1"
@@ -72,6 +73,7 @@ neon-pageserver:
   enabled: true
   nameOverride: "pageserver"
   statefulSet:
+    replicas: 2
     resources:
       limits:
         cpu: "500m"
@@ -84,20 +86,22 @@ neon-pageserver:
   settings:
     brokerEndpoint: "http://neon-broker-svc:50051"
     storageControllerUrl: "http://neon-storage-controller-svc:50051"
-    # storageControllerApiToken 由 global.jwt.pageserverJwtToken 提供（无需重复填）
-    availabilityZone: "az1"
+    # control_plane_api_token（PS→SC upcall）需 generations_api scope，
+    # 由 global.jwt.generationsApiJwtToken 提供（无需在此重复填）
+    # 注意：可用区（AZ）不再静态指定。pageserver 启动时由 init 容器读取所在节点的
+    # topology.kubernetes.io/zone 标签动态获取，并写入 pageserver.toml 与 metadata.json。
+    # 节点未打该标签时 Pod 会停在 Init 状态并报错退出（需先 kubectl label node <node> topology.kubernetes.io/zone=<az>）。
     remoteStorage:
       bucketName: "neondata"
       bucketRegion: "us-east-1"
       endpoint: "http://192.168.232.128:9000"
       prefixInBucket: "pageserver"
-    statefulSet:
-      replicas: 1
 
 neon-safekeeper:
   enabled: true
   nameOverride: "safekeeper"
   statefulSet:
+    replicas: 3
     resources:
       limits:
         cpu: "200m"
@@ -114,9 +118,10 @@ neon-safekeeper:
     # 若需覆盖可在此显式填写
     storageControllerUrl: "http://neon-storage-controller-svc:50051"
     adminToken: ""
-    availabilityZone: "az1"
-    statefulSet:
-      replicas: 3
+    # 注意：可用区（AZ）不再静态指定。safekeeper 启动时由 init 容器读取所在节点的
+    # topology.kubernetes.io/zone 标签动态获取，主容器 --availability-zone 与注册 sidecar
+    # 上报的 availability_zone_id 均使用该值。
+    # 节点未打该标签时 Pod 会停在 Init 状态并报错退出。
 
 neon-control-plane:
   enabled: true
@@ -124,7 +129,7 @@ neon-control-plane:
   image:
     repository: 192.168.232.128:5000/neon/neon-control-plane
     tag: "latest"
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   resources:
     limits:
       cpu: "100m"
@@ -135,45 +140,30 @@ neon-control-plane:
   settings:
     storageControllerUrl: "http://neon-storage-controller-svc:50051"
     listenPort: 8080
-    defaultTenantId: "3d1f7595b468230304e0b73cecbcb081"
-    # 节点清单使用 StatefulSet 稳定 DNS（与 nameOverride 一致）
-    pageservers:
-      - id: 1000
-        host: "neon-pageserver-0.neon-pageserver-hl-svc"
-        pgPort: 64000
-        httpPort: 9898
-    safekeepers:
-      - id: 2000
-        host: "neon-safekeeper-0.neon-safekeeper-hl-svc"
-        pgPort: 5454
-        httpPort: 7676
-      - id: 2001
-        host: "neon-safekeeper-1.neon-safekeeper-hl-svc"
-        pgPort: 5454
-        httpPort: 7676
-      - id: 2002
-        host: "neon-safekeeper-2.neon-safekeeper-hl-svc"
-        pgPort: 5454
-        httpPort: 7676
+    # 注意：pageserver / safekeeper 的节点清单不再由 Helm 静态声明。
+    # pageserver 启动时通过 re-attach(metadata.json) 自注册，safekeeper 由 sk-register sidecar 注册并激活，
+    # 控制面运行时只从 storage controller 查询（GET /control/v1/node、/control/v1/safekeeper）。
     # compute_ctl 二进制只存在于 compute-node 专用镜像中，不能用 neondatabase/neon 通用镜像。
     computeImage: "neondatabase/compute-node-v17:latest"
-    enableK8sCompute: true
     domain: "neon.local"
     nodePortExternalHost: "192.168.232.128"
     computeServiceType: "NodePort"
 
-# 默认关闭，fixme：后续删除该代码
-neon-compute:
-  # 静态回退/演示用 compute。生产环境由 control plane 动态拉起（enableK8sCompute=true），
-  # 因此默认关闭；仅在 control plane 未启用 K8s 动态拉起、或需无 K8s 写权限的演示/排障时开启。
-  enabled: false
-  nameOverride: "compute"
-  resources:
-    limits:
-      cpu: "500m"
-      memory: 512Mi
-    requests:
-      cpu: "500m"
-      memory: 512Mi
-  settings:
-    connstr: "postgresql://cloud_admin@localhost/postgres"
+# ---------------- 本地盘 StorageClass（可选） ----------------
+# 默认关闭：若集群已有 local-path（k3s/kind 内置）或自有 StorageClass，无需启用本子 chart。
+# 启用示例（同时让 pageserver/safekeeper 显式引用该 StorageClass）：
+#   helm upgrade neon ./charts/neon \
+#     --set local-path-provisioner.enabled=true \
+#     --set neon-pageserver.statefulSet.storage.storageClassName=local-path \
+#     --set neon-safekeeper.statefulSet.storage.storageClassName=local-path
+# 注意：该子 chart 由 neon 统一调度命名空间，不要开启 namespace.create。
+local-path-provisioner:
+  # -- 是否部署 local-path-provisioner（默认关闭，不侵入现有部署）
+  enabled: true
+  storageClass:
+    # -- 供给出的 StorageClass 名称（默认不设为集群默认，由组件显式引用）
+    name: "local-path"
+  image:
+    # -- provisioner 镜像（私有 registry 场景需覆盖）
+    repository: rancher/local-path-provisioner
+    tag: "v0.0.36"

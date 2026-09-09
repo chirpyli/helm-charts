@@ -168,26 +168,15 @@ func reconcileOnStartup() {
 		log.Printf("reconcile: restored state from ConfigMap snapshot")
 	}
 
-	// 2) 如果启用 K8s compute，与现有 compute Deployment 对账
-	if cfg.EnableK8sCompute && kubePersist != nil {
+	// 2) 与现有 compute Deployment 对账
+	// compute 只能由控制面动态拉起，因此只要控制面运行在集群内（kubePersist != nil）
+	// 就需要用 K8s 实际状态修正 endpoint.status。
+	if kubePersist != nil {
 		reconcileWithK8s()
 	}
 
-	// 3) 确保默认分支存在（若既无持久化也无任何分支）
-	st.mu.Lock()
-	if st.defaultBranchID != "" {
-		if _, ok := st.branches[st.defaultBranchID]; !ok {
-			st.branches[st.defaultBranchID] = &Branch{
-				BranchID:   st.defaultBranchID,
-				ProjectID:  "", // 默认分支不属于特定 project
-				TenantID:   st.tenantID,
-				TimelineID: st.defaultTimelineID,
-				Name:       "main",
-				Default:    true,
-			}
-		}
-	}
-	st.mu.Unlock()
+	// 说明：不再有"默认分支"概念。tenant 与 timeline 一律由 POST /projects 按需创建，
+	// 每个 project 的主分支在创建时就已写入 branches，无需在此兜底补齐。
 }
 
 // reconcileWithK8s 与 K8s 实际 compute Deployment 对账。

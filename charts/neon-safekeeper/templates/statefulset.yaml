@@ -35,6 +35,7 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       # 生成每 pod 唯一的 node id 文件（id = nodeIdBase + StatefulSet ordinal）
+      # 同时探测本 Pod 所在节点的可用区，写入 /etc/neon/availability-zone 供主容器与注册 sidecar 使用
       initContainers:
         - name: init-node-id
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -43,9 +44,18 @@ spec:
             - sh
             - -c
             - |
+              # 1) 动态探测本 Pod 所在节点的可用区（结果写入 shell 变量 AZ）
+              #    AZ 不能静态指定：同一份 chart 部署到多可用区集群时，静态值会让所有副本上报同一个 AZ，
+              #    storage controller 会据此做出错误的调度决策（timeline 放置、pageserver 选主）。
+              {{- include "neon-safekeeper.azLookupScript" . | nindent 14 }}
+
+              # 2) 写入共享 emptyDir，主容器与注册 sidecar 均从此文件读取，保证三处 AZ 完全一致
+              mkdir -p /etc/neon
+              printf '%s\n' "${AZ}" > /etc/neon/availability-zone
+              echo "init-node-id: wrote availability-zone=${AZ}"
+
               ORD=$(echo "$POD_NAME" | awk -F- '{print $NF}')
               ID=$(( {{ .Values.statefulSet.nodeIdBase }} + ORD ))
-              mkdir -p /etc/neon
               printf '%s' "$ID" > /etc/neon/node-id
               echo "init-node-id: wrote node-id=$ID"
           env:
@@ -53,6 +63,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # 本 Pod 所在节点名，供 init 容器读取节点标签（topology.kubernetes.io/zone）探测可用区
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           volumeMounts:
             - name: node-id
               mountPath: /etc/neon
@@ -68,6 +83,14 @@ spec:
             - sh
             - -c
             - |
+              # 可用区：读取 init-node-id 从节点 topology.kubernetes.io/zone 标签探测到的值
+              # （不静态指定，保证与注册到 storage controller 的 availability_zone_id 一致）
+              AZ="$(cat /etc/neon/availability-zone 2>/dev/null || true)"
+              if [ -z "${AZ}" ]; then
+                echo "safekeeper: FATAL - 无法读取 /etc/neon/availability-zone，拒绝以空可用区启动"
+                exit 1
+              fi
+
               # 构造公告地址：pageserver 通过 broker 发现 safekeeper 时使用此地址连接
               # 若未设置 --advertise-pg，safekeeper 默认使用 --listen-pg (0.0.0.0)，
               # 导致 pageserver 无法连接（Connection refused）
@@ -79,7 +102,7 @@ spec:
                 --listen-http "0.0.0.0:{{ .Values.service.httpPort }}" \
                 --broker-endpoint "{{ .Values.settings.brokerEndpoint }}" \
                 --pg-auth-public-key-path /etc/neon/jwt/publicKey.pem \
-                --availability-zone "{{ .Values.settings.availabilityZone }}"
+                --availability-zone "${AZ}"
           env:
             - name: RUST_LOG
               value: "INFO"
@@ -173,7 +196,14 @@ spec:
               HOST="${POD_NAME}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
               PG_PORT={{ .Values.service.pgPort }}
               HTTP_PORT={{ .Values.service.httpPort }}
-              AZ="{{ .Values.settings.availabilityZone }}"
+              # 可用区：读取 init-node-id 从节点 topology.kubernetes.io/zone 标签探测到的值，
+              # 与主容器 --availability-zone 同源，保证上报给 SC 的 AZ 与实际运行 AZ 一致
+              AZ="$(cat /etc/neon/availability-zone 2>/dev/null || true)"
+              if [ -z "${AZ}" ]; then
+                echo "sk-register: FATAL - 无法读取 /etc/neon/availability-zone，注册 sidecar 退出"
+                sleep 3600
+                exit 1
+              fi
               REGION="default"
 
               # 向 SC 注册本 safekeeper 并激活（幂等）
@@ -193,14 +223,19 @@ spec:
                   -d "${body}" --connect-timeout 5 --max-time 30) || code="000"
                 echo "sk-register: upsert node ${nid} -> HTTP ${code}"
 
-                # 2) 激活调度策略：只有 active 才会被 SC 调度新 timeline
+                # 2) 激活调度策略：只有 Active 才会被 SC 调度新 timeline
                 #    POST /control/v1/safekeeper/:id/scheduling_policy（Scope::Admin）
+                #
+                #    注意大小写：上游 SkSchedulingPolicy 只 derive 了 Serialize/Deserialize（无 rename_all），
+                #    JSON 反序列化认的是变体名首字母大写形式（"Active"/"Pause"/"Decomissioned"）；
+                #    只有 FromStr / 数据库落库才用小写（"active"）。写成小写会被 SC 判 400 拒收，
+                #    safekeeper 会一直停在 Activating，SC 永不向其调度 timeline。
                 local pcode
                 pcode=$(curl -s -o /tmp/pol.txt -w "%{http_code}" -X POST \
                   "${SC_URL}/control/v1/safekeeper/${nid}/scheduling_policy" \
                   -H "Content-Type: application/json" \
                   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-                  -d '{"scheduling_policy":"active"}' --connect-timeout 5 --max-time 30) || pcode="000"
+                  -d '{"scheduling_policy":"Active"}' --connect-timeout 5 --max-time 30) || pcode="000"
                 echo "sk-register: set active node ${nid} -> HTTP ${pcode}"
               }
 
@@ -209,11 +244,12 @@ spec:
               deregister() {
                 local nid="$1"
                 echo "sk-register: pod 终止，将 node ${nid} 标记为 decomissioned"
+                # 同样要注意大小写：JSON 里必须是变体名形式 "Decomissioned"（见上方激活处的说明）
                 curl -s -o /dev/null -X POST \
                   "${SC_URL}/control/v1/safekeeper/${nid}/scheduling_policy" \
                   -H "Content-Type: application/json" \
                   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-                  -d '{"scheduling_policy":"decomissioned"}' \
+                  -d '{"scheduling_policy":"Decomissioned"}' \
                   --connect-timeout 5 --max-time 10 || true
                 echo "sk-register: deregister 完成"
               }

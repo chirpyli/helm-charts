@@ -28,6 +28,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       # 生成每 pod 唯一的 identity.toml（node id = nodeIdBase + StatefulSet ordinal）
       # 同时生成 metadata.json（NodeMetadata），供 pageserver 向 storage controller 注册 node
+      # 并生成最终的 pageserver.toml（模板 + 运行时探测到的可用区）
       initContainers:
         - name: init-identity
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -36,6 +37,20 @@ spec:
             - sh
             - -c
             - |
+              # 1) 动态探测本 Pod 所在节点的可用区（结果写入 shell 变量 AZ）
+              #    AZ 不能静态指定：同一份 chart 部署到多可用区集群时，静态值会让所有副本上报同一个 AZ，
+              #    storage controller 会据此做出错误的时间线调度决策。
+              {{- include "neon-pageserver.azLookupScript" . | nindent 14 }}
+
+              # 2) 生成最终的 pageserver.toml：
+              #    ConfigMap 仅作为模板挂载到 /etc/neon/pageserver-template（只读，无法原地追加），
+              #    这里复制一份到工作目录后追加运行期才知道的 availability_zone。
+              #    每次启动都覆盖写：既保证幂等，也让 ConfigMap 变更后能随 Pod 重启生效。
+              cp /etc/neon/pageserver-template/pageserver.toml /home/postgres/pageserver/pageserver.toml
+              printf '\n# 可用区：由 init 容器从节点 topology.kubernetes.io/zone 标签动态探测写入\n' >> /home/postgres/pageserver/pageserver.toml
+              printf 'availability_zone = "%s"\n' "${AZ}" >> /home/postgres/pageserver/pageserver.toml
+              echo "init-identity: wrote pageserver.toml with availability_zone=${AZ}"
+
               ORD=$(echo "$POD_NAME" | awk -F- '{print $NF}')
               ID=$(( {{ .Values.statefulSet.nodeIdBase }} + ORD ))
               # 写入 identity.toml
@@ -48,6 +63,7 @@ spec:
               HOST="${POD_NAME}.${HEADLESS_SVC}.${POD_NAMESPACE}.svc.cluster.local"
               # 写入 metadata.json，包含 pageserver 监听的各端口地址及可用区
               # NodeMetadata 结构参见: libs/pageserver_api/src/config.rs
+              # 可用区取运行时探测值 ${AZ}（SC 的 re-attach 优先使用 metadata.json 中的 availability_zone_id）
               cat > /home/postgres/pageserver/metadata.json <<METAEOF
               {
                 "host": "${HOST}",
@@ -57,10 +73,10 @@ spec:
                 "https_port": {{ .Values.service.httpsPort }},
                 "grpc_host": "${HOST}",
                 "grpc_port": {{ .Values.service.grpcPort }},
-                "availability_zone_id": "{{ .Values.settings.availabilityZone }}"
+                "availability_zone_id": "${AZ}"
               }
               METAEOF
-              echo "init-identity: wrote metadata.json with host=${HOST}"
+              echo "init-identity: wrote metadata.json with host=${HOST} az=${AZ}"
           env:
             - name: POD_NAME
               valueFrom:
@@ -70,9 +86,18 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # 本 Pod 所在节点名，供 init 容器读取节点标签（topology.kubernetes.io/zone）探测可用区
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           volumeMounts:
             - name: data
               mountPath: /home/postgres/pageserver
+            # pageserver.toml 模板（ConfigMap），init 容器复制后追加运行期探测到的可用区
+            - name: config
+              mountPath: /etc/neon/pageserver-template
+              readOnly: true
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
@@ -93,7 +118,8 @@ spec:
             # 若未设置，pageserver 不带 token 连接 safekeeper，safekeeper 会因
             # pg-auth-public-key-path 开启 JWT 验证而拒绝连接 (Protocol error: EOF during auth)
             - name: NEON_AUTH_TOKEN
-              value: {{ .Values.global.jwt.safekeeperJwtToken | default "" | quote }}
+              # 用 dig 安全取值：独立部署（无 umbrella global.jwt）时返回空串而非 nil panic
+              value: {{ dig "jwt" "safekeeperJwtToken" "" .Values.global | quote }}
             # pageserver 据此向 SC 上报本节点可达地址（POST /re-attach）
             - name: HADRON_NODE_IP_ADDRESS
               valueFrom:
@@ -171,10 +197,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ .Values.statefulSet.storage.mountPath }}
-            # 将 ConfigMap 中的 pageserver.toml 以文件形式挂入工作目录
-            - name: config
-              mountPath: /home/postgres/pageserver/pageserver.toml
-              subPath: pageserver.toml
+            # 注意：pageserver.toml 不再从 ConfigMap 直接挂载（ConfigMap 子路径只读，无法写入运行期探测到的可用区），
+            # 而是由 init-identity 基于 /etc/neon/pageserver-template 模板生成到工作目录（即 data 卷内）。
             # 共享 JWT 公钥（校验 SC / compute 的 token）
             - name: jwt
               mountPath: /etc/neon/jwt

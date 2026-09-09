@@ -5,11 +5,9 @@
 global: {}
 
 image:
-  # -- Neondatabase 镜像仓库（含 pageserver / safekeeper / compute_ctl 等二进制）
   repository: neondatabase/neon
   # -- 镜像拉取策略
   pullPolicy: IfNotPresent
-  # -- 覆盖镜像 tag（默认取 chart appVersion）
   tag: "latest"
 
 # -- docker-registry secret 列表
@@ -26,10 +24,12 @@ settings:
   brokerEndpoint: "http://neon-broker-svc:50051"
   # -- storage_controller 基址（不含 /upcall/v1 前缀，模板会自动追加）。umbrella 下默认指向 neon-storage-controller-svc
   storageControllerUrl: "http://neon-storage-controller-svc:50051"
-  # -- SC→PS 的 PageServerApi JWT（来自全局 jwt Secret，umbrella 透传）。留空时 pageserver 启动时鉴权失败，需由 umbrella 注入
+  # -- PS→SC upcall 的 JWT，必须是 generations_api scope（SC 的 re-attach/validate 只认该 scope）。
+  # 留空时回退 global.jwt.generationsApiJwtToken；若误填 PageServerApi(pageserverJwtToken) 会导致 upcall 401。
   storageControllerApiToken: ""
-  # -- 可用区标识
-  availabilityZone: "az1"
+  # Pod 启动时由 init 容器通过 kube-apiserver 读取所在节点的 topology.kubernetes.io/zone 标签动态获取，
+  # 并分别写入运行时生成的 pageserver.toml（availability_zone）与 metadata.json（availability_zone_id）。
+  # 节点缺少该标签时 Pod 会停在 Init 状态并报错退出（不会带空/错误的 AZ 注册）。
   # -- PostgreSQL 二进制根目录（pageserver 据此找 v<major>/bin/initdb 与 lib）。
   # 镜像内二进制位于 /usr/local/v{14..17}，必须显式指向 /usr/local，否则默认工作目录找不到 initdb
   pgDistribDir: "/usr/local"
@@ -50,6 +50,12 @@ serviceAccount:
   # serviceAccount.name -- 显式指定 SA 名
   name: ""
 
+rbac:
+  # 动态获取可用区所需的只读权限：init 容器需读取所在节点的 topology.kubernetes.io/zone 标签。
+  nodeReader:
+    # -- 是否创建 nodes: get 的 ClusterRole/ClusterRoleBinding（关闭则由平台方统一授权，节点无 zone 标签时 Pod 会启动失败）
+    enabled: true
+
 # -- Pod 注解
 podAnnotations: {}
 # -- Pod 额外标签
@@ -61,17 +67,14 @@ securityContext: {}
 
 # StatefulSet 专属配置
 statefulSet:
-  # -- 副本数（默认 1；如需分片调度可增大，但单租户单分片下通常 1~3）
-  replicas: 1
+  replicas: 2
   # node id 基址：每个 pod 的 id = nodeIdBase + StatefulSet ordinal
   nodeIdBase: 1000
-  # -- PVC 持久化（tenant 层数据；测试环境可适当调小，生产建议 >= 50Gi + 本地 SSD StorageClass）
   storage:
     size: 5Gi
     # storageClassName -- 留空使用集群默认 StorageClass；生产建议指定本地盘 StorageClass
-    storageClassName: ""
+    storageClassName: "local-path"
     mountPath: /home/postgres/pageserver
-  # -- Guaranteed QoS：requests == limits（测试环境内存调小；生产建议 CPU >= 4 / 内存 >= 8Gi）
   resources:
     limits:
       cpu: "500m"

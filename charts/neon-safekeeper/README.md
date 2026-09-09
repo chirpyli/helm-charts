@@ -31,6 +31,26 @@ safekeeper 是 Neon 的 WAL 持久化守护组件，负责：
 | ConfigMap | 渲染 safekeeper 启动配置 |
 | ServiceAccount | 运行时身份标识 |
 | PodDisruptionBudget | minAvailable=2（保持 WAL 多数派） |
+| ClusterRole/ClusterRoleBinding | 供 init 容器读取节点标签（仅 `nodes: get`） |
+
+## 可用区（AZ）动态获取
+
+可用区**不通过 values 静态指定**，而是在 Pod 启动时由 `init-node-id` 容器通过 kube-apiserver 读取
+**所在节点**的 `topology.kubernetes.io/zone` 标签得到，并写入共享 emptyDir 文件
+`/etc/neon/availability-zone`，供以下两处消费，保证三者一致：
+
+- 主容器启动参数 `--availability-zone`；
+- 注册 sidecar `sk-register` 上报给 storage controller 的 `availability_zone_id`。
+
+前置条件：
+
+```console
+# 节点必须带 zone 标签，否则 Pod 会停在 Init 状态并输出中文告警日志
+kubectl label node <node-name> topology.kubernetes.io/zone=<az> --overwrite
+```
+
+权限由 `rbac.nodeReader.enabled`（默认 `true`）创建的 ClusterRole 提供，仅授予 `nodes: get`；
+若由平台方统一授权，可将其置为 `false`。
 
 ## 配置说明
 
@@ -93,6 +113,7 @@ Kubernetes: `^1.18.x-x`
 | podLabels | object | `{}` | Pod 额外标签 |
 | podSecurityContext | object | `{}` | Pod 安全上下文 |
 | priorityClassName | string | `""` | Pod 优先级类 |
+| rbac.nodeReader.enabled | bool | `true` | 是否创建读取节点 zone 标签的 RBAC（nodes: get，用于动态获取可用区） |
 | securityContext | object | `{}` | 容器安全上下文 |
 | service.type | string | `"ClusterIP"` | Service 类型 |
 | service.httpPort | int | `7676` | HTTP 管理端口（SC 心跳 / 探针） |
@@ -100,7 +121,6 @@ Kubernetes: `^1.18.x-x`
 | serviceAccount.annotations | object | `{}` | SA 注解 |
 | serviceAccount.create | bool | `true` | 是否创建 ServiceAccount |
 | serviceAccount.name | string | `""` | 显式指定 SA 名称 |
-| settings.availabilityZone | string | `"az1"` | 可用区标识 |
 | settings.brokerEndpoint | string | `"http://neon-broker-svc:50051"` | storage_broker 地址 |
 | settings.jwtSecretName | string | `"neon-jwt"` | 共享 JWT 公钥 Secret 名称 |
 | statefulSet.nodeIdBase | int | `2000` | node id 基址（每 pod id = base + ordinal） |

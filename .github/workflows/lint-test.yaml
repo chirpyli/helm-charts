@@ -50,5 +50,7 @@ jobs:
           version: v1.32
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # local-path-provisioner 排除：k3d 集群已内置同名 local-path StorageClass，
+      # ct install 创建同名资源会因对象已存在而失败（chart 本身由 ct lint 校验）
       - name: Run chart-testing (install)
-        run: ct install --config ct.yaml --excluded-charts neon-storage-controller,neon-proxy
+        run: ct install --config ct.yaml --excluded-charts neon-storage-controller,neon-proxy,local-path-provisioner

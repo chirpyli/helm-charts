@@ -20,8 +20,9 @@ settings:
   storageControllerUrl: "http://neon-storage-controller-svc:50051"
   # -- admin scope JWT token（注册 sidecar 通过此 token 调用 SC API，对应 peerJwtToken）
   adminToken: ""
-  # -- 可用区标识
-  availabilityZone: "az1"
+  # Pod 启动时由 init 容器通过 kube-apiserver 读取所在节点的 topology.kubernetes.io/zone 标签动态获取，
+  # 主容器的 --availability-zone 与注册 sidecar 上报的 availability_zone_id 均使用该探测值。
+  # 节点缺少该标签时 Pod 会停在 Init 状态并报错退出（不会带空/错误的 AZ 注册）。
   # -- 共享 JWT 公钥 Secret 名称（safekeeper 用其校验 compute/pageserver 的 WAL 连接 token）
   jwtSecretName: "neon-jwt"
 
@@ -46,6 +47,12 @@ serviceAccount:
   create: true
   annotations: {}
   name: ""
+
+rbac:
+  # 动态获取可用区所需的只读权限：init 容器需读取所在节点的 topology.kubernetes.io/zone 标签。
+  nodeReader:
+    # -- 是否创建 nodes: get 的 ClusterRole/ClusterRoleBinding（关闭则由平台方统一授权，节点无 zone 标签时 Pod 会启动失败）
+    enabled: true
 
 podAnnotations: {}
 podLabels: {}

@@ -100,6 +100,10 @@ type safekeeperListResult []struct {
 
 // listSafekeepers 列出所有 Active 状态的 safekeeper 节点（control/v1 路径，需 Admin scope）。
 // 用于在创建 endpoint 时获取 safekeeper 连接串列表。
+//
+// 重要：SC 的 get_safekeepers() 只返回 scheduling_policy == Active 的节点；
+// 而 safekeeper upsert 落库时默认是 Activating，必须由 sk-register sidecar 显式激活后才会出现在这里。
+// 上游 SkSchedulingPolicy 的 serde 用的是变体名（首字母大写），故这里按 "Active" 比较。
 func (c *scClient) listSafekeepers(ctx context.Context) ([]SafekeeperInfo, error) {
 	data, code, err := c.do(ctx, "GET", "/control/v1/safekeeper", "admin", nil)
 	if err != nil {
@@ -156,84 +160,64 @@ func (c *scClient) deleteTenant(ctx context.Context, tenantID string) error {
 	return nil
 }
 
+// listNodes 列出 SC 中已注册的全部 pageserver 节点（control/v1 路径，需 Admin scope）。
+//
+// 只读接口：控制面**不注册**任何节点（节点由 pageserver re-attach 自注册），
+// 这里只用于在启动时打印节点快照、以及在 locate 失败时给出更明确的错误提示。
+func (c *scClient) listNodes(ctx context.Context) ([]NodeInfo, error) {
+	data, code, err := c.do(ctx, "GET", "/control/v1/node", "admin", nil)
+	if err != nil {
+		return nil, fmt.Errorf("list nodes: %w", err)
+	}
+	if code >= 400 {
+		return nil, fmt.Errorf("list nodes -> HTTP %d: %s", code, string(data))
+	}
+	var nodes []NodeInfo
+	if err := json.Unmarshal(data, &nodes); err != nil {
+		return nil, fmt.Errorf("parse node list: %w", err)
+	}
+	return nodes, nil
+}
+
 // =============================================================================
-// Bootstrap 流程（启动时幂等执行一次）
+// 启动诊断（只读）
 // =============================================================================
 
-// bootstrap 幂等地把节点注册进 SC 并创建默认租户/时间线。
-// 注意：此处的默认租户/时间线仅供系统级兼容（旧 project 的回退）。
+// logStorageNodes 启动时 best-effort 打印一次 SC 中的节点快照，便于排障。
 //
-//	新 project 通过 createProject 独立创建专属 tenant + timeline。
-func bootstrap() error {
+// 与控制面旧版 bootstrap 的区别：这里**不注册节点、不创建默认 tenant/timeline**，
+// 全部依赖各组件自注册（pageserver re-attach / safekeeper sk-register sidecar）。
+// 因此失败时只打 WARN，不阻塞启动：组件可能晚于控制面启动，SC 自身也有 reconciler 兜底。
+func logStorageNodes() {
 	ctx := context.Background()
 
-	// 1) 注册 pageserver 节点
-	for _, ps := range cfg.Pageservers {
-		body := map[string]interface{}{
-			"node_id":              ps.ID,
-			"listen_pg_addr":       ps.Host,
-			"listen_pg_port":       ps.PGPort,
-			"listen_http_addr":     ps.Host,
-			"listen_http_port":     ps.HTTPPort,
-			"availability_zone_id": "az1",
-		}
-		_, code, err := sc.do(ctx, "POST", "/control/v1/node", "admin", body)
-		if err != nil {
-			return fmt.Errorf("register pageserver %d: %w", ps.ID, err)
-		}
-		if code >= 400 && code != 409 {
-			logWarn("register pageserver %d -> HTTP %d (continuing)", ps.ID, code)
-		}
-	}
-
-	// 2) 注册 safekeeper 节点并设为 Active
-	for _, sk := range cfg.Safekeepers {
-		body := map[string]interface{}{
-			"id":                   sk.ID,
-			"host":                 sk.Host,
-			"port":                 sk.PGPort,
-			"http_port":            sk.HTTPPort,
-			"https_port":           0,
-			"region_id":            "local",
-			"availability_zone_id": "az1",
-			"version":              1,
-		}
-		_, code, err := sc.do(ctx, "POST", fmt.Sprintf("/control/v1/safekeeper/%d", sk.ID), "admin", body)
-		if err != nil {
-			return fmt.Errorf("register safekeeper %d: %w", sk.ID, err)
-		}
-		if code >= 400 && code != 409 {
-			logWarn("register safekeeper %d -> HTTP %d (continuing)", sk.ID, code)
-		}
-		// 设为 Active
-		_, code, _ = sc.do(ctx, "POST", fmt.Sprintf("/control/v1/safekeeper/%d/scheduling_policy", sk.ID), "admin",
-			map[string]string{"scheduling_policy": "Active"})
-	}
-
-	// 3) 创建默认租户（幂等）
-	tid := cfg.DefaultTenantID
-	_, code, err := sc.do(ctx, "POST", "/v1/tenant", "pageserverapi", map[string]interface{}{
-		"new_tenant_id":    tid,
-		"shard_parameters": map[string]interface{}{"count": 1, "stripe_size": 1024},
-	})
+	nodes, err := sc.listNodes(ctx)
 	if err != nil {
-		return fmt.Errorf("create tenant: %w", err)
-	}
-	if code >= 400 && code != 409 {
-		logWarn("create tenant -> HTTP %d (continuing)", code)
+		logWarn("startup: list pageserver nodes from storage controller: %v", err)
+	} else {
+		var active int
+		for _, n := range nodes {
+			if n.Scheduling == "Active" {
+				active++
+			}
+		}
+		log.Printf("startup: storage controller has %d pageserver node(s), %d active", len(nodes), active)
+		for _, n := range nodes {
+			log.Printf("  pageserver node=%d scheduling=%s pg=%s:%d http=%s:%d",
+				n.ID, n.Scheduling, n.ListenPgAddr, n.ListenPgPort, n.ListenHTTPAddr, n.ListenHTTPPort)
+		}
 	}
 
-	// 4) 创建初始时间线（生成合法的 16 字节 / 32 hex TimelineId，幂等）
-	initialTimeline := randHex(16)
-	_, code, err = sc.do(ctx, "POST", fmt.Sprintf("/v1/tenant/%s/timeline", tid), "pageserverapi",
-		map[string]interface{}{"new_timeline_id": initialTimeline})
+	sks, err := sc.listSafekeepers(ctx)
 	if err != nil {
-		return fmt.Errorf("create timeline: %w", err)
+		logWarn("startup: list safekeepers from storage controller: %v", err)
+	} else {
+		log.Printf("startup: storage controller has %d active safekeeper(s)", len(sks))
+		for _, sk := range sks {
+			log.Printf("  safekeeper node=%d host=%s port=%d", sk.ID, sk.Host, sk.Port)
+		}
+		if len(sks) == 0 {
+			logWarn("startup: no active safekeeper yet (safekeeper 需由 sk-register sidecar 注册并激活)")
+		}
 	}
-	if code >= 400 && code != 409 {
-		logWarn("create timeline -> HTTP %d (continuing)", code)
-	}
-	st.setDefaultTimeline(initialTimeline)
-	log.Printf("bootstrap: default tenant=%s timeline=%s", tid, initialTimeline)
-	return nil
 }

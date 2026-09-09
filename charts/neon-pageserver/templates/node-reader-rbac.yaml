@@ -1,0 +1,45 @@
+{{/*
+pageserver 动态获取可用区（AZ）所需的只读 RBAC。
+
+init 容器（init-identity）在启动时需要通过 kube-apiserver 读取自身所在节点（Pod.spec.nodeName）
+的 topology.kubernetes.io/zone 标签，因此本 chart 的 ServiceAccount 需要 nodes 资源的 get 权限。
+
+最小权限说明：
+  - 只授予 get，不授予 list/watch：Pod 只能读取自己所在的那个节点对象，无法枚举集群中的其他节点；
+  - 不需要任何写权限，也不涉及 Pod/Secret 等敏感资源。
+
+渲染条件：
+  - rbac.nodeReader.enabled 为 true（默认 true；受限集群可由平台方统一授权后置为 false）；
+  - 且能确定明确的 ServiceAccount 名称（serviceAccount.create 为 true，或显式指定了 serviceAccount.name），
+    避免把集群级权限误绑到命名空间默认的 default SA 上。
+*/}}
+{{- if and .Values.rbac.nodeReader.enabled (or .Values.serviceAccount.create .Values.serviceAccount.name) }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "neon-pageserver.fullname" . }}-node-reader
+  labels:
+    {{- include "neon-pageserver.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "neon-pageserver.fullname" . }}-node-reader
+  labels:
+    {{- include "neon-pageserver.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "neon-pageserver.fullname" . }}-node-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "neon-pageserver.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

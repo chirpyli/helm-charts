@@ -5,16 +5,26 @@ package main
 // =============================================================================
 
 // Config 控制面运行配置。
+//
+// 设计约束：这里**不再**保存 pageserver / safekeeper 节点清单，也没有 default_tenant_id。
+// 原因：
+//  1. 节点由各组件自注册进 storage controller（pageserver 走 re-attach 携带 metadata.json，
+//     safekeeper 走 sk-register sidecar 的 upsert + 激活），控制面再存一份必然与真相源漂移，
+//     且同 id 不同地址会被 SC 判为 Mismatched 返回 409（storage_controller/src/service.rs）；
+//  2. 静态清单无法感知副本数变化（扩容漏注册、缩容留僵尸节点），node id 还与子 chart 的
+//     nodeIdBase + ordinal 规则重复定义；
+//  3. tenant / timeline 一律由 POST /projects 按需创建，不再有"默认租户"。
+//
+// 控制面只在运行时从 SC 查询节点：GET /control/v1/node、GET /control/v1/safekeeper、
+// GET /debug/v1/tenant/{id}/locate。
 type Config struct {
 	StorageControllerURL string `json:"storage_controller_url"`
 	ListenPort           int    `json:"listen_port"`
-	DefaultTenantID      string `json:"default_tenant_id"`
-	Pageservers          []Node `json:"pageservers"`
-	Safekeepers          []Node `json:"safekeepers"`
 	ComputeImage         string `json:"compute_image"`
-	EnableK8sCompute     bool   `json:"enable_k8s_compute"`
 	// ComputeServiceType 动态拉起的 compute Service 类型：ClusterIP（默认）或 NodePort。
-	// 仅当 EnableK8sCompute=true 时生效；NodePort 用于集群外直连（无 proxy / LoadBalancer 场景）。
+	// NodePort 用于集群外直连（无 proxy / LoadBalancer 场景）。
+	// 说明：compute 只能由控制面通过 K8s API 动态拉起（创建 Deployment + Service），
+	// 不存在静态部署形态，因此这里没有"是否启用 K8s compute"之类的开关。
 	ComputeServiceType string `json:"compute_service_type"`
 	// NodePortExternalHost NodePort 模式下对外的可达主机（节点 IP / 域名 / 负载均衡器 VIP）。
 	// 拼接到返回给用户的连接串 <NodePortExternalHost>:<nodePort>；为空时回退 localhost。
@@ -22,12 +32,21 @@ type Config struct {
 	Domain               string `json:"domain"`
 }
 
-// Node bootstrap 注册到 SC 的 pageserver/safekeeper 节点描述。
-type Node struct {
-	ID       int    `json:"id"`
-	Host     string `json:"host"`
-	PGPort   int    `json:"pg_port"`
-	HTTPPort int    `json:"http_port"`
+// NodeInfo SC `GET /control/v1/node` 返回的 pageserver 节点信息（NodeDescribeResponse 的子集）。
+//
+// 仅用于启动诊断日志与错误信息增强（例如"SC 中当前没有 Active 的 pageserver"），
+// 控制面不据此注册任何节点——SC 才是唯一真相源。
+//
+// 注意 scheduling 字段的取值：上游 SkSchedulingPolicy / NodeSchedulingPolicy 的 serde 用的是
+// 变体名（首字母大写，如 "Active"），只有 FromStr / 落库才是小写（"active"），
+// 因此这里按大写比较。
+type NodeInfo struct {
+	ID             int    `json:"id"`
+	ListenPgAddr   string `json:"listen_pg_addr"`
+	ListenPgPort   int    `json:"listen_pg_port"`
+	ListenHTTPAddr string `json:"listen_http_addr"`
+	ListenHTTPPort int    `json:"listen_http_port"`
+	Scheduling     string `json:"scheduling"`
 }
 
 // =============================================================================

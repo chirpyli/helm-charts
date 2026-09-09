@@ -1,26 +1,17 @@
 # neon-control-plane
 
-![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) [![Lint and Test Charts](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml/badge.svg)](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml)
+Neon 控制面（轻量 HTTP 服务，提供 project / branch / endpoint 管理 API，对接 storage_controller 完成存储调度）。
 
-Neon 最小可运行控制面（轻量 HTTP 服务，提供 project / branch / endpoint 管理 API，对接 storage_controller 完成存储调度）。
-
-**Homepage:** https://neon.tech
-
-## Source Code
-
-* [https://github.com/neondatabase/neon](https://github.com/neondatabase/neon)
-* 本 chart 内嵌 Go 实现源码（`src/` 目录）
 
 ## 简介
 
-`neon-control-plane` 是一个**常驻运行的轻量 HTTP 服务**（Deployment 部署），对外暴露 Neon v2 风格 REST API，对内完成与 storage_controller、pageserver、safekeeper、compute 的关键交互。
+`neon-control-plane` 是一个常驻运行的轻量HTTP服务，对外暴露Neon v2风格REST API，供用户使用。
 
 ### 核心功能
 
-1. **Bootstrap（启动时幂等初始化）**：将 pageserver / safekeeper 节点注册进 storage_controller，创建系统默认租户（兼容旧 project 回退）
 2. **Project API**：完整的 project CRUD（创建时自动创建独立 tenant + timeline + endpoint，删除时级联清理 tenant、分支和端点）
 3. **Branch API**：完整的 branch CRUD（创建新 timeline / 列表 / 删除，支持父子分支关系追踪和子分支保护）
-4. **Endpoint API**：完整的 endpoint CRUD（创建 / 列表 / 删除），动态定位 pageserver + safekeeper，签发 JWT，生成 SCRAM 密码，可选 K8s 动态拉起 compute
+4. **Endpoint API**：完整的 endpoint CRUD（创建 / 列表 / 删除）
 5. **Compute Spec 下发**：`GET /compute/api/v2/computes/{id}/spec`，compute_ctl 启动时拉取
 6. **SC 通知处理**：`/notify-attach` (JWT 鉴权 + 重建 ComputeSpec) / `POST /notify-safekeepers` (JWT 鉴权 + 更新 safekeeper 列表)
 7. **ConfigMap 持久化**：write-through + 去抖落盘，启动时对账恢复
@@ -35,6 +26,70 @@ Neon 最小可运行控制面（轻量 HTTP 服务，提供 project / branch / e
 - **持久化**：K8s ConfigMap `neon-cp-state` 存储 JSON 快照，write-through + 1s 去抖合并写入
 - **启动对账**：从 ConfigMap 加载快照，与 K8s compute Deployment 双向对账修正状态
 - **单写者约束**：`replicas: 1` + `Recreate` 策略保证 ConfigMap 写入安全
+- **卸载自动清理**：内置 `pre-delete` 钩子 Job，`helm uninstall` 时自动回收控制面动态创建的资源（详见下方「卸载清理」）
+
+---
+
+## 卸载清理（pre-delete 钩子）
+
+### 背景
+
+控制面在运行期通过 in-cluster K8s API **动态创建**以下资源，它们**不在任何 Helm 清单中**，
+`helm uninstall` 默认只会删除 release 清单里的对象，这些动态资源会变成孤儿资源长期残留：
+
+| 资源 | 名称 / 选择方式 | 创建位置（`src/k8s.go`） |
+| ---- | --------------- | ------------------------ |
+| Deployment | `neon-compute-<endpoint_id>`，标签 `app.kubernetes.io/name=neon-compute` | `buildComputeDeployment` |
+| Service | `neon-compute-<endpoint_id>`，标签 `app.kubernetes.io/name=neon-compute` | `buildComputeService` |
+| ConfigMap | `neon-cp-state`（控制面状态快照） | `doPersist` / `upsertConfigMap` |
+
+### 实现
+
+`templates/pre-delete-cleanup-job.yaml` 声明了一个 `helm.sh/hook: pre-delete` 的 Job
+（`{{ .Release.Name }}-neon-control-plane-pre-delete-cleanup`），在 **Helm 删除 release 资源之前**执行：
+
+```mermaid
+flowchart TD
+    A[helm uninstall neon] --> B[Helm 执行 pre-delete 钩子]
+    B --> C[Job: pre-delete-cleanup]
+    C --> D[删除 compute Service/Deployment/Pod<br/>-l app.kubernetes.io/name=neon-compute]
+    C --> E[删除状态 ConfigMap neon-cp-state]
+    D --> F[Helm 删除 release 自身资源]
+    E --> F
+    F --> G[hook-succeeded 删除清理 Job]
+```
+
+要点：
+
+- **执行时机**：`helm.sh/hook: pre-delete` + `hook-weight: "-10"`（早于其他 pre-delete 钩子）；
+- **执行身份**：复用控制面的 ServiceAccount，其 ClusterRole 已具备 `deployments`/`services`/`pods`/`configmaps` 的 `delete` 权限；
+- **清理顺序**：Service → Deployment → 兜底 Pod（按同一标签）→ 状态 ConfigMap；
+- **best-effort**：每一步失败只打印 `[neon-cleanup] WARN` 并继续，Job 最终以 0 退出，**不会阻塞卸载**（钩子 Job 失败会卡住 `helm uninstall`）；
+- **幂等**：所有 `kubectl delete` 均带 `--ignore-not-found=true`，资源不存在时正常退出，可重复执行；
+- **无残留**：`hook-delete-policy: before-hook-creation,hook-succeeded`，清理成功后 Job 自身也被删除；
+- **超时保护**：`backoffLimit: 2`、`activeDeadlineSeconds: 300`。
+
+### 使用
+
+```console
+# 正常卸载：自动触发清理
+$ helm uninstall neon -n neon
+
+# 查看清理日志（需在卸载完成前另开终端，或用 --no-hooks 时手动执行）
+$ kubectl -n neon logs job/neon-neon-control-plane-pre-delete-cleanup
+[neon-cleanup] 开始清理控制面动态创建的资源: namespace=neon label=app.kubernetes.io/name=neon-compute
+[neon-cleanup] 1/4 删除 compute Service
+[neon-cleanup] 2/4 删除 compute Deployment
+[neon-cleanup] 3/4 删除残留 compute Pod
+[neon-cleanup] 4/4 删除控制面状态 ConfigMap neon-cp-state
+[neon-cleanup] 清理完成
+```
+
+> - 使用 `helm uninstall --no-hooks` 会**跳过**清理，动态资源会残留，需要手动执行
+>   `kubectl -n <ns> delete svc,deploy,pod -l app.kubernetes.io/name=neon-compute` 与
+>   `kubectl -n <ns> delete configmap neon-cp-state`。
+> - 清理范围限定在 release 所在命名空间；同一命名空间部署多个 release 时，标签
+>   `app.kubernetes.io/name=neon-compute` 的 compute 资源会被一并清理。
 
 ---
 
@@ -305,7 +360,7 @@ $ curl -X DELETE "http://localhost:8080/projects/proj-.../branches/br-...?hard_d
 5. 签发 storage JWT（scope: `pageserverapi,safekeeperdata`，含 tenant_id）
 6. 生成 SCRAM-SHA-256 验证器（角色 `cloud_admin`）
 7. 组装 ComputeSpec（含 pageserver 连接信息、safekeeper 连接串、JWT、角色密码）
-8. 可选 `enableK8sCompute=true` 时，通过 K8s API 创建 Deployment + Service
+8. 通过 K8s API 创建 compute Deployment + Service（compute 只能动态拉起，无静态配置路径）
 
 ```console
 $ curl -X POST http://localhost:8080/projects/proj-176db416e9091dd9/endpoints \
@@ -363,9 +418,9 @@ $ curl -X POST http://localhost:8080/projects/proj-176db416e9091dd9/endpoints \
 
 > - `mode` 根据 `type` 自动设置：`"read_write"` → `"Primary"`，`"read_only"` → `"Replica"`
 > - pageserver 和 safekeeper 信息优先从 SC 动态获取，失败时回退到 `values.yaml` 静态配置
-> - `status` 为 `"created"`；若 `enableK8sCompute=true` 且 Deployment 创建成功则为 `"running"`
+> - `status` 为 `"created"`；若 compute Deployment 创建成功则为 `"running"`
 
-**动态拉起 compute**：当 `settings.enableK8sCompute=true` 时，控制面额外通过 K8s API 创建 Deployment（命名格式 `neon-compute-{endpoint_id}`）和 ClusterIP Service。容器启动命令：
+**动态拉起 compute**：compute 节点没有静态部署形态，创建 endpoint 时控制面必然通过 K8s API 创建 Deployment（命名格式 `neon-compute-{endpoint_id}`）和 Service（类型由 `settings.computeServiceType` 决定）。容器启动命令：
 
 ```
 compute_ctl --control-plane-uri http://neon-control-plane-svc:8080
@@ -386,7 +441,7 @@ $ curl http://localhost:8080/projects/proj-176db416e9091dd9/endpoints
 
 #### `DELETE /projects/{project_id}/endpoints/{endpoint_id}` — 删除 endpoint
 
-删除内存记录，同时清理 K8s 资源（若 `enableK8sCompute=true`）。
+删除内存记录，同时清理该 endpoint 对应的 K8s Deployment 与 Service（compute 只能动态拉起，回收由控制面负责）。
 
 ```console
 $ curl -X DELETE http://localhost:8080/projects/proj-176db416e9091dd9/endpoints/ep-aac4db8fe1aa217a
@@ -647,7 +702,7 @@ $ helm install neon ./charts/neon
 ## 前置依赖
 
 - **storage_controller**：租户/节点调度（需先部署并配置 databaseUrl）
-- **pageserver / safekeeper**：节点清单（需先部署，否则 bootstrap 注册失败）
+- **pageserver / safekeeper**：需先部署，由它们自注册进 storage_controller（控制面不代注册）；SC 中无 Active 节点时创建 endpoint 会返回 503
 - **JWT 密钥对**：控制面持有私钥签发 token；pageserver/safekeeper 挂载公钥校验
 
 ## 本地开发
@@ -699,8 +754,7 @@ openssl pkey -in privatekey.pem -pubout -out publickey.pem
     {"id": 2001, "host": "localhost", "pg_port": 5455, "http_port": 7677},
     {"id": 2002, "host": "localhost", "pg_port": 5456, "http_port": 7678}
   ],
-  "compute_image": "neondatabase/neon:latest",
-  "enable_k8s_compute": false
+  "compute_image": "neondatabase/neon:latest"
 }
 ```
 
@@ -736,7 +790,7 @@ curl -X DELETE http://localhost:8080/projects/proj-xxx
 # 级联删除：tenant + timeline + branch + endpoint（全部清理）
 ```
 
-> **注意**：本地运行时 `enable_k8s_compute=false`（默认），此时不连接 K8s API，也无 ConfigMap 持久化（状态仅存内存，重启丢失）。所有 K8s 相关功能静默跳过。
+> **注意**：本地（非集群内）运行时拿不到 in-cluster ServiceAccount，K8s 客户端不可用：此时 compute 的 Deployment/Service 创建与 ConfigMap 持久化都会跳过（仅打印告警日志，状态只存内存，重启丢失）。compute 只能由控制面动态拉起，本地这种跑法只能用于接口与 ComputeSpec 的排障验证。
 
 ## Requirements
 
@@ -747,6 +801,9 @@ Kubernetes: `^1.18.x-x`
 | Key                                  | Type   | Default                                                                                            | Description                                                          |
 | ------------------------------------ | ------ | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | affinity                             | object | `{}`                                                                                             | 亲和性                                                               |
+| cleanup.image.pullPolicy             | string | `"IfNotPresent"`                                                                                 | 卸载清理钩子（pre-delete Job）镜像拉取策略                           |
+| cleanup.image.repository             | string | `"public.ecr.aws/bitnami/kubectl"`                                                               | 卸载清理钩子镜像（需包含 kubectl，私有仓库可覆盖）                   |
+| cleanup.image.tag                    | string | `"1.26"`                                                                                         | 卸载清理钩子镜像 tag                                                 |
 | extraManifests                       | list   | `[]`                                                                                             | 额外创建的 K8s 清单                                                  |
 | fullnameOverride                     | string | `""`                                                                                             | 完全覆盖 fullname 模板                                               |
 | global                               | object | `{}`                                                                                             | 全局配置                                                             |
@@ -778,13 +835,9 @@ Kubernetes: `^1.18.x-x`
 | serviceAccount.create                | bool   | `true`                                                                                           | 是否创建 ServiceAccount                                              |
 | serviceAccount.name                  | string | `""`                                                                                             | 显式指定 SA 名称                                                     |
 | settings.computeImage                | string | `"neondatabase/neon:latest"`                                                                     | 动态拉起 compute 使用的镜像                                          |
-| settings.defaultTenantId             | string | `"3d1f7595b468230304e0b73cecbcb081"`                                                             | bootstrap 创建的默认租户 id（32 位 hex）                             |
 | settings.domain                      | string | `"neon.local"`                                                                                   | proxy 兼容接口域名（phase-2 启用 proxy 时使用）                      |
-| settings.enableK8sCompute            | bool   | `false`                                                                                          | 是否启用 K8s 动态拉起 compute（需 RBAC）                             |
 | settings.jwtSecretName               | string | `"neon-jwt"`                                                                                     | 共享 JWT Secret 名称（含 privateKey.pem / publicKey.pem）            |
 | settings.listenPort                  | int    | `8080`                                                                                           | 控制面自身监听端口                                                   |
-| settings.pageservers                 | list   | `[{"id":1000,"host":"neon-pageserver-0.neon-pageserver-hl-svc","pgPort":64000,"httpPort":9898}]` | pageserver 节点清单（bootstrap 注册进 SC）                           |
-| settings.safekeepers                 | list   | `[{"id":2000,"host":"neon-safekeeper-0....","pgPort":5454,"httpPort":7676}, ...]`                | safekeeper 节点清单（bootstrap 注册进 SC 并设为 Active，需 >= 3 个） |
 | settings.storageControllerUrl        | string | `"http://neon-storage-controller-svc:50051"`                                                     | storage_controller 基址（含端口）                                    |
 | tolerations                          | list   | `[]`                                                                                             | 容忍                                                                 |
 
