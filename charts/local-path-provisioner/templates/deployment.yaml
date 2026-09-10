@@ -6,8 +6,8 @@ metadata:
   labels:
     {{- include "local-path-provisioner.labels" . | nindent 4 }}
 spec:
-  # 副本数固定为 1：上游 v0.0.36 未启用 leader election，多副本会重复供给卷
-  replicas: {{ .Values.replicaCount }}
+  # 副本数固定为 1：上游 v0.0.36 未启用 leader election，多副本会重复供给卷，故写死不可配置
+  replicas: 1
   strategy:
     # 单副本且需要独占配置，使用 Recreate 避免新旧实例并发供给
     type: Recreate
@@ -30,7 +30,9 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "local-path-provisioner.serviceAccountName" . }}
+      # 名称固定为 local-path-provisioner-service-account：与 ServiceAccount 一致（provisioner 二进制
+      # 创建 helper Pod 时硬编码使用），不可配置，故写死。
+      serviceAccountName: local-path-provisioner-service-account
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -64,7 +66,9 @@ spec:
       volumes:
         - name: config-volume
           configMap:
-            name: {{ include "local-path-provisioner.configMapName" . }}
+            # 名称固定为 local-path-config：与 ConfigMap 名称一致（provisioner 二进制硬编码读取），
+            # 不可配置，故写死。
+            name: local-path-config
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

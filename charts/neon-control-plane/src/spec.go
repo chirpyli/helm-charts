@@ -16,11 +16,18 @@ type ComputeSpec struct {
 	Mode                     string             `json:"mode"`
 	PageserverConnectionInfo PageserverConnInfo `json:"pageserver_connection_info"`
 	SafekeeperConnstrings    []string           `json:"safekeeper_connstrings"`
-	StorageAuthToken         string             `json:"storage_auth_token"`
-	ProjectID                string             `json:"project_id,omitempty"`
-	BranchID                 string             `json:"branch_id,omitempty"`
-	EndpointID               string             `json:"endpoint_id,omitempty"`
-	Cluster                  *ClusterSpec       `json:"cluster,omitempty"`
+	// SafekeepersGeneration safekeeper 成员配置 generation。
+	// 对应上游 ComputeSpec::safekeepers_generation（Option<u32>），compute_ctl 会写入
+	// neon.safekeepers GUC 的 g#<generation>: 前缀：
+	//   1) 非 0 值强制 walproposer 使用成员配置；
+	//   2) walproposer 用它比较成员配置的新旧，避免应用过期集合。
+	// 指针 + omitempty：未知时不下发（上游 serde(default) 视为 None）。
+	SafekeepersGeneration *int         `json:"safekeepers_generation,omitempty"`
+	StorageAuthToken      string       `json:"storage_auth_token"`
+	ProjectID             string       `json:"project_id,omitempty"`
+	BranchID              string       `json:"branch_id,omitempty"`
+	EndpointID            string       `json:"endpoint_id,omitempty"`
+	Cluster               *ClusterSpec `json:"cluster,omitempty"`
 	// LocalProxyConfig 为本地 proxy 配置（含 JWKS），新版本 compute_ctl 要求此字段存在。
 	// Phase-1 不使用 JWT 认证，下发空的 jwks 列表即可。
 	LocalProxyConfig     *LocalProxySpec `json:"local_proxy_config"`
@@ -58,10 +65,15 @@ type TlsConfig struct {
 	CertPath string `json:"cert_path"`
 }
 
-// PageserverConnInfo：注意 shard 的 pageserver 用 libpq_url + grpc_url，没有 host/port/http_host/http_port。
+// PageserverConnInfo 对应 libs/compute_api/src/spec.rs 的 PageserverConnectionInfo。
+// 注意 shard 的 pageserver 用 libpq_url + grpc_url，没有 host/port/http_host/http_port。
+//
+// 不变量（上游注释原文）：
+//   - shard_count：0 表示 unsharded，1 表示 1 个分片的 sharded 租户，以此类推；
+//   - stripe_size：shard_count == 0 时必须为 null，否则必须非 null。
 type PageserverConnInfo struct {
 	ShardCount int                  `json:"shard_count"`
-	StripeSize int                  `json:"stripe_size"`
+	StripeSize *int                 `json:"stripe_size"`
 	Shards     map[string]ShardInfo `json:"shards"`
 }
 
@@ -72,7 +84,18 @@ type ShardInfo struct {
 type PageserverShard struct {
 	ID       *int   `json:"id,omitempty"`
 	LibpqURL string `json:"libpq_url"`
-	GRPCURL  string `json:"grpc_url"`
+	// GRPCURL 上游为 Option<String>：未启用 gRPC 的 pageserver 不下发该字段（omitempty）。
+	GRPCURL *string `json:"grpc_url,omitempty"`
+}
+
+// stripeSizePtr 生成 PageserverConnInfo.StripeSize（*int）。
+// 严格遵循上游不变量：shard_count == 0（unsharded）时为 null，否则必须非 null。
+func stripeSizePtr(shardCount, stripeSize int) *int {
+	if shardCount <= 0 {
+		return nil
+	}
+	v := stripeSize
+	return &v
 }
 
 type ClusterSpec struct {

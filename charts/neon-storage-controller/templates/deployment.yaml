@@ -1,12 +1,6 @@
 {{- /*
 外部 PostgreSQL 连接串是 storage_controller 的必填项（见 storage_controller/src/main.rs
 的 Secrets::load：缺失即 anyhow::bail!("Database URL is not set")）。
-
-chart 不再提供 settings.databaseUrl 明文入口，只接受外部预建 Secret 的"引用"，
-因此这里做渲染期校验：未配置直接 fail，而不是放出一个必然 CrashLoopBackOff 的 Pod。
-注意 Helm 3 对 --set 传入的未定义 values 键只告警不报错，旧命令
-`--set neon-storage-controller.settings.databaseUrl=...` 会被静默忽略，
-正是靠这段 fail 兜底给出可读的错误提示。
 */}}
 {{- $dbSecret := include "neon-storage-controller.databaseUrlSecretName" . }}
 {{- if not $dbSecret }}

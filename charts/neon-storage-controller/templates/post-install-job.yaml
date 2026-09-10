@@ -24,7 +24,7 @@ spec:
       serviceAccountName: "{{ include "neon-storage-controller.fullname" . }}-node-describe"
       initContainers:
       - name: set-envs
-        image: public.ecr.aws/bitnami/kubectl:1.26 
+        image: {{ .Values.registerControlPlane.kubectlImage }}
         resources:
           {{- toYaml .Values.registerControlPlane.resources | nindent 10 }}
         command: ["sh", "-c"]

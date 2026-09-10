@@ -232,7 +232,7 @@ tenant / timeline 一律由 `POST /projects` 按需创建（每个 project 独�
 - pageserver 启动时 `POST /upcall/v1/re-attach` 向 SC 上报节点信息并接受租户 attach 指令；路径由 `controller_upcall_client.rs:163` 的 `base_url().join("re-attach")` 拼接，故 pageserver.toml 的 `control_plane_api` **必须配成 `http://<sc>:<port>/upcall/v1`**（带前缀）。
 - 结论：本方案直接配置即可启用，SC 侧无需写代码。
 
-**(B) SC → control plane 的 compute_hook（需 control plane 实现端点，当前未做）**
+**(B) SC → control plane 的 compute_hook（✅ 已实现，见 1.5.1）**
 - SC 在租户 shard 调度变更后，通过 `ComputeHook` 向 `control_plane_url` 发送两类通知（`do_notify_iteration` 使用 **PUT**）：
   - `PUT {control_plane_url}/notify-attach`：让运行中 compute **热更新其 pageserver 映射**（shard→pageserver 路由）。
   - `PUT {control_plane_url}/notify-safekeepers`：让 compute **热更新其 safekeeper 集合**（body：`NotifySafekeepersRequest { tenant_id, timeline_id, generation, safekeepers: Vec<SafekeeperInfo> }`，见 `compute_hook.rs:353`）。
@@ -244,7 +244,23 @@ tenant / timeline 一律由 `POST /projects` 按需创建（每个 project 独�
 
 **当前能否实现？**
 - (A) pageserver→SC upcall：**能**，SC 原生，配好 `control_plane_api=/upcall/v1` 即可。
-- (B) SC→control plane compute_hook：**接收端点当前未实现**。注意严格模式下 SC **必须**配置 `--control-plane-url`（否则启动即 `bail`），故"SC 不设 `--control_plane_url`"在 K8s 下不成立——umbrella 必须始终透传 `--control-plane-url=http://neon-control-plane:<port>`。compute notification 的语义变为：SC 会向该地址发起 `PUT /notify-attach`、`PUT /notify-safekeepers`，但 phase-1 控制面**未实现这两个端点**（请求失败/404），SC 进入重试，**不影响 SC 自身启动与基本链路**；compute 经重连 + `compute_ctl reconfigure()` 自愈。
+- (B) SC→control plane compute_hook：**已实现**（接收端点 + 向 compute 推送，见 1.5.1）。
+
+### 1.5.1 compute_hook 实现现状（已落地）
+
+链路：`SC PUT /notify-attach` → 控制面按 SC `tenant_locate` 重建 spec → 后台 `POST /configure` 推送给 compute。
+
+| 环节 | 实现位置 | 要点 |
+| --- | --- | --- |
+| 接收端点 | `src/notify.go` | 10s 内返回（SC `NOTIFY_REQUEST_TIMEOUT=10s`）；locate 失败返回 **503**（旧 423 只重试 3 次就放弃） |
+| spec 重建 | `src/notify.go::buildPageserverConnInfo` | 唯一构造入口，修正 `shard_params.count`（上游字段名是 `count` 不是 `shard_count`）与 shard key（取 `TenantShardId` 的 4hex 后缀） |
+| 路由指纹 | `src/reconciler.go::routeFingerprint` | 由"已写入 spec 的路由"计算，用于判断 spec 是否落后于 SC 真相 |
+| 周期对账 | `src/reconciler.go`（默认 30s） | 兜底：通知丢失 / 控制面重启 / SC 去重跳过 |
+| 推送 | `src/compute.go::configureCompute` | `POST http://neon-compute-<ep>.<ns>.svc.cluster.local:3080/configure`，`ConfigurationRequest{spec, compute_ctl_config}`，120s 超时 |
+| compute 鉴权 | `src/jwks.go` + `src/jwt.go::signComputeToken` | spec 下发 OKP/Ed25519 JWKS；调用携带 `compute_id` 声明的 JWT（对齐 neon_local `create_jwks_from_pem` / `generate_jwt(None)`） |
+| compute 地址 | 主 Service DNS（ClusterIP） | 不需要维护 endpoint→PodIP 映射；3080 **不再**以 NodePort 暴露 |
+
+> 升级注意：`compute_ctl_config.jwks` 只在 compute 启动时读取，**存量 compute 必须重建一次**才能生效。
 
 **实现 compute_hook（远程模式）需要做哪些工作？**
 1. **control plane 新增两个 HTTP 端点（PUT）**：`/notify-attach`、`/notify-safekeepers`；校验 `Authorization: Bearer <token>` 且 scope=ControlPlane（与 SC `--control-plane-jwt-token` 同源私钥签发，control plane 用同一公钥验证）；body 反序列化复用 `pageserver_api::upcall_api` / `compute_api` 的对应结构（如 `NotifyReAttachRequest`、`NotifySafekeepersRequest`）以保持二进制兼容。
@@ -516,7 +532,9 @@ POST /projects/{id}/endpoints   → GET <sc>/debug/v1/tenant/{tid}/locate [Admin
 
 storage_controller 启动**必须**配置 `--control-plane-url <cp>`（严格模式默认，缺失即 `bail`，见 `storage_controller/src/main.rs:388`；对应 neon_local 的 `control_plane_hooks_api`）。当 SC 因故障/调度把某租户 shard 迁移到新 pageserver 时，会通过 `compute_hook` **主动回调** control plane，通知 compute 重新配置 `pageserver_connection_info`（否则 compute 仍连旧 pageserver）。
 - 若 `neon-control-plane` 要支持 pageserver 故障转移后 compute 自动重连，需实现该 upcall 接收端点（`PUT /notify-attach`、`PUT /notify-safekeepers`，body 复用 `pageserver_api::upcall_api` 的 `NotifyReAttachRequest`/`NotifySafekeepersRequest`）；收到后更新对应 endpoint 的 ComputeSpec 并触发 compute_ctl 重载。
-- phase-1 控制面**未实现该端点**，但因 `--control-plane-url` 在严格模式下为必填，SC 仍会向其发起通知请求；请求失败时 SC 进入重试、不影响自身启动与基本链路。故障转移后 compute 经重连 + `compute_ctl reconfigure()` 自愈；多 pageserver/自动迁移等生产场景再补实现（见 1.5 节实现清单 1–6）。
+- **已实现**（见 1.5.1）：控制面接收 `/notify-attach`、`/notify-safekeepers`，按 SC locate 重建 spec，
+  并主动 `POST /configure` 推送给运行中的 compute；另有 30s 周期对账兜底通知丢失场景。
+  不再依赖"compute 重连 + 自愈"，故障转移后无需人工删 Pod。
 
 **2) Endpoint 创建的 ComputeSpec 关键字段**（结构见 `libs/compute_api/src/spec.rs`，默认值参考 `control_plane/src/endpoint.rs::start()`）：
 

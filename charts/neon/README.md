@@ -6,15 +6,13 @@
 
 `neon` 是 Neon 平台的 **umbrella（总）chart**，通过 Helm dependencies 统一编排以下子 chart：
 
-| 子 Chart                    | 类型        | 说明                                         | 默认        |
-| --------------------------- | ----------- | -------------------------------------------- | ----------- |
-| `neon-storage-broker`     | Deployment  | WAL 流节点发现 pub-sub                       | ✅ 启用     |
-| `neon-storage-controller` | Deployment  | 存储调度大脑（租户/节点/分片管理）           | ✅ 启用     |
-| `neon-pageserver`         | StatefulSet | 有状态存储节点（物化 tenant 层数据）         | ✅ 启用     |
-| `neon-safekeeper`         | StatefulSet | 有状态 WAL 多副本存储                        | ✅ 启用     |
-| `neon-control-plane`      | Deployment  | 最小控制面（project/endpoint API）           | ✅ 启用     |
-
-
+| 子 Chart                    | 类型        | 说明                                 | 默认    |
+| --------------------------- | ----------- | ------------------------------------ | ------- |
+| `neon-storage-broker`     | Deployment  | WAL 流节点发现 pub-sub               | ✅ 启用 |
+| `neon-storage-controller` | Deployment  | 存储调度大脑（租户/节点/分片管理）   | ✅ 启用 |
+| `neon-pageserver`         | StatefulSet | 有状态存储节点（物化 tenant 层数据） | ✅ 启用 |
+| `neon-safekeeper`         | StatefulSet | 有状态 WAL 多副本存储                | ✅ 启用 |
+| `neon-control-plane`      | Deployment  | 最小控制面（project/endpoint API）   | ✅ 启用 |
 
 ## 更新
 
@@ -36,7 +34,6 @@ $ helm upgrade neon neon-0.1.0.tgz -n neon -f my-values.yaml
 >
 > - 修改 `my-values.yaml` 后重新 `helm upgrade` 即可让配置生效（部分有状态组件如 pageserver / safekeeper 的资源变更可能需要手动滚动重启）。
 > - 涉及子 chart 镜像、模板（templates）改动时，务必先 `helm dependency build .` 重新打包，否则 `helm upgrade` 仍会使用已缓存的旧依赖。
-
 
 ## 卸载
 
@@ -121,23 +118,23 @@ Kubernetes: `^1.18.x-x`
 
 ### 全局配置
 
-| Key                       | Type   | Default | Description                                                                                                      |
-| ------------------------- | ------ | ------- | ---------------------------------------------------------------------------------------------------------------- |
-| global.region             | string | `"local"` | 区域标识                                                                                                        |
-| global.jwt.existingSecret | string | `""`    | **必填**：外部预建的共享 JWT Secret 名称。chart 不再创建该 Secret，也不接收任何密钥/token 明文；缺失时渲染报错 |
+| Key                       | Type   | Default     | Description                                                                                                          |
+| ------------------------- | ------ | ----------- | -------------------------------------------------------------------------------------------------------------------- |
+| global.region             | string | `"local"` | 区域标识                                                                                                             |
+| global.jwt.existingSecret | string | `""`      | **必填**：外部预建的共享 JWT Secret 名称。chart 不再创建该 Secret，也不接收任何密钥/token 明文；缺失时渲染报错 |
 
 共享 JWT Secret 的键契约（由仓库根目录 `jwt.py` 生成，键名勿改）：
 
-| 键                       | 内容                        | 消费方                                                                |
-| ------------------------ | --------------------------- | --------------------------------------------------------------------- |
-| `publicKey.pem`          | Ed25519 公钥 PEM            | pageserver / safekeeper / storage-controller / control-plane（校验）  |
-| `privateKey.pem`         | Ed25519 私钥 PEM            | **仅** control-plane（签发）                                          |
-| `pageserverJwtToken`     | scope `pageserverapi`       | storage-controller → pageserver                                       |
-| `safekeeperJwtToken`     | scope `safekeeperdata`      | pageserver → safekeeper、storage-controller                           |
-| `controlPlaneJwtToken`   | scope `controlplane`        | storage-controller → control-plane upcall                             |
-| `peerJwtToken`           | scope `admin`               | safekeeper 注册 sidecar、storage-controller 副本间                    |
-| `generationsApiJwtToken` | scope `generations_api`     | pageserver → storage-controller upcall（re-attach / validate）        |
-| `computeJwtToken`        | scope `tenant`              | 预留（当前无消费方，控制面持有私钥可自行签发）                        |
+| 键                         | 内容                     | 消费方                                                               |
+| -------------------------- | ------------------------ | -------------------------------------------------------------------- |
+| `publicKey.pem`          | Ed25519 公钥 PEM         | pageserver / safekeeper / storage-controller / control-plane（校验） |
+| `privateKey.pem`         | Ed25519 私钥 PEM         | **仅** control-plane（签发）                                   |
+| `pageserverJwtToken`     | scope`pageserverapi`   | storage-controller → pageserver                                     |
+| `safekeeperJwtToken`     | scope`safekeeperdata`  | pageserver → safekeeper、storage-controller                         |
+| `controlPlaneJwtToken`   | scope`controlplane`    | storage-controller → control-plane upcall                           |
+| `peerJwtToken`           | scope`admin`           | safekeeper 注册 sidecar、storage-controller 副本间                   |
+| `generationsApiJwtToken` | scope`generations_api` | pageserver → storage-controller upcall（re-attach / validate）      |
+| `computeJwtToken`        | scope`tenant`          | 预留（当前无消费方，控制面持有私钥可自行签发）                       |
 
 生成与引用：
 
@@ -159,54 +156,54 @@ helm install neon charts/neon -n neon --set global.jwt.existingSecret=neon-jwt
 
 ### neon-storage-controller
 
-| Key                                                   | Type   | Default                                  | Description                               |
-| ----------------------------------------------------- | ------ | ---------------------------------------- | ----------------------------------------- |
-| neon-storage-controller.enabled                       | bool   | `true`                                 | 是否启用                                  |
-| neon-storage-controller.nameOverride                  | string | `"storage-controller"`                 | 覆盖 name                                 |
-| neon-storage-controller.resources.limits.cpu          | string | `"1"`                                  | CPU 上限（测试环境；生产 >= 2）           |
-| neon-storage-controller.resources.limits.memory       | string | `"512Mi"`                              | 内存上限（测试环境；生产 >= 4Gi）         |
-| neon-storage-controller.resources.requests.cpu        | string | `"1"`                                  | CPU 请求（测试环境；生产 >= 2）           |
-| neon-storage-controller.resources.requests.memory     | string | `"512Mi"`                              | 内存请求（测试环境；生产 >= 4Gi）         |
-| global.storageController.databaseUrl.existingSecret   | string | `"storage-controller-pg-cluster"`      | 外部 PostgreSQL 连接串 Secret 名称（**必填**，chart 只引用不创建） |
-| global.storageController.databaseUrl.secretKey        | string | `"uri"`                                | 上述 Secret 中存放连接串的键名（CloudNativePG / docs 示例均用 `uri`） |
-| neon-storage-controller.settings.jwtSecretName        | string | `""`                                   | 共享 JWT Secret 名称（留空时回退 `global.jwt.existingSecret`） |
-| neon-storage-controller.settings.controlPlaneUrl      | string | `"http://neon-control-plane-svc:8080"` | control plane upcall 地址（严格模式必填） |
+| Key                                                 | Type   | Default                                  | Description                                                              |
+| --------------------------------------------------- | ------ | ---------------------------------------- | ------------------------------------------------------------------------ |
+| neon-storage-controller.enabled                     | bool   | `true`                                 | 是否启用                                                                 |
+| neon-storage-controller.nameOverride                | string | `"storage-controller"`                 | 覆盖 name                                                                |
+| neon-storage-controller.resources.limits.cpu        | string | `"1"`                                  | CPU 上限（测试环境；生产 >= 2）                                          |
+| neon-storage-controller.resources.limits.memory     | string | `"512Mi"`                              | 内存上限（测试环境；生产 >= 4Gi）                                        |
+| neon-storage-controller.resources.requests.cpu      | string | `"1"`                                  | CPU 请求（测试环境；生产 >= 2）                                          |
+| neon-storage-controller.resources.requests.memory   | string | `"512Mi"`                              | 内存请求（测试环境；生产 >= 4Gi）                                        |
+| global.storageController.databaseUrl.existingSecret | string | `"storage-controller-pg-cluster"`      | 外部 PostgreSQL 连接串 Secret 名称（**必填**，chart 只引用不创建） |
+| global.storageController.databaseUrl.secretKey      | string | `"uri"`                                | 上述 Secret 中存放连接串的键名（CloudNativePG / docs 示例均用`uri`）   |
+| neon-storage-controller.settings.jwtSecretName      | string | `""`                                   | 共享 JWT Secret 名称（留空时回退`global.jwt.existingSecret`）          |
+| neon-storage-controller.settings.controlPlaneUrl    | string | `"http://neon-control-plane-svc:8080"` | control plane upcall 地址（严格模式必填）                                |
 
 注意：storage-controller 的公钥与各 scope token 不再通过 values 传递，
 统一由 `global.jwt.existingSecret` 指向的共享 Secret 以 `secretKeyRef` 注入环境变量。
 
 ### neon-pageserver
 
-| Key                                                   | Type   | Default                                        | Description          |
-| ----------------------------------------------------- | ------ | ---------------------------------------------- | -------------------- |
-| neon-pageserver.enabled                               | bool   | `true`                                       | 是否启用             |
-| neon-pageserver.nameOverride                          | string | `"pageserver"`                               | 覆盖 name            |
-| neon-pageserver.statefulSet.resources.limits.cpu      | string | `"500m"`                                     | CPU 上限（测试环境） |
-| neon-pageserver.statefulSet.resources.limits.memory   | string | `"512Mi"`                                    | 内存上限（测试环境） |
-| neon-pageserver.statefulSet.resources.requests.cpu    | string | `"500m"`                                     | CPU 请求             |
-| neon-pageserver.statefulSet.resources.requests.memory | string | `"512Mi"`                                    | 内存请求             |
-| neon-pageserver.statefulSet.storage.size              | string | `"5Gi"`                                      | PVC 大小（测试环境） |
-| neon-pageserver.settings.brokerEndpoint               | string | `"http://neon-broker-svc:50051"`             | broker 地址          |
-| neon-pageserver.settings.storageControllerUrl         | string | `"http://neon-storage-controller-svc:50051"` | SC 地址              |
-| neon-pageserver.rbac.nodeReader.enabled               | bool   | `true`                                       | 是否创建读取节点 zone 标签的 RBAC（nodes: get） |
-| neon-pageserver.settings.remoteStorage.existingSecret | string | `""`                                         | 对象存储 Secret 名称（坐标与凭证的唯一事实来源），留空回退 `global.storage.bucket.existingSecret` |
-| neon-pageserver.settings.remoteStorage.prefixInBucket | string | `"pageserver"`                               | 路径前缀（布局参数，非连接坐标） |
-| global.storage.bucket.existingSecret                  | string | `"bucket-credentials"`                       | 对象存储 Secret 名称（全局入口） |
+| Key                                                   | Type   | Default                                        | Description                                                                                        |
+| ----------------------------------------------------- | ------ | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| neon-pageserver.enabled                               | bool   | `true`                                       | 是否启用                                                                                           |
+| neon-pageserver.nameOverride                          | string | `"pageserver"`                               | 覆盖 name                                                                                          |
+| neon-pageserver.statefulSet.resources.limits.cpu      | string | `"500m"`                                     | CPU 上限（测试环境）                                                                               |
+| neon-pageserver.statefulSet.resources.limits.memory   | string | `"512Mi"`                                    | 内存上限（测试环境）                                                                               |
+| neon-pageserver.statefulSet.resources.requests.cpu    | string | `"500m"`                                     | CPU 请求                                                                                           |
+| neon-pageserver.statefulSet.resources.requests.memory | string | `"512Mi"`                                    | 内存请求                                                                                           |
+| neon-pageserver.statefulSet.storage.size              | string | `"5Gi"`                                      | PVC 大小（测试环境）                                                                               |
+| neon-pageserver.settings.brokerEndpoint               | string | `"http://neon-broker-svc:50051"`             | broker 地址                                                                                        |
+| neon-pageserver.settings.storageControllerUrl         | string | `"http://neon-storage-controller-svc:50051"` | SC 地址                                                                                            |
+| neon-pageserver.rbac.nodeReader.enabled               | bool   | `true`                                       | 是否创建读取节点 zone 标签的 RBAC（nodes: get）                                                    |
+| neon-pageserver.settings.remoteStorage.existingSecret | string | `""`                                         | 对象存储 Secret 名称（坐标与凭证的唯一事实来源），留空回退`global.storage.bucket.existingSecret` |
+| neon-pageserver.settings.remoteStorage.prefixInBucket | string | `"pageserver"`                               | 路径前缀（布局参数，非连接坐标）                                                                   |
+| global.storage.bucket.existingSecret                  | string | `"bucket-credentials"`                       | 对象存储 Secret 名称（全局入口）                                                                   |
 
 ### neon-safekeeper
 
-| Key                                                   | Type   | Default                            | Description                  |
-| ----------------------------------------------------- | ------ | ---------------------------------- | ---------------------------- |
-| neon-safekeeper.enabled                               | bool   | `true`                           | 是否启用                     |
-| neon-safekeeper.nameOverride                          | string | `"safekeeper"`                   | 覆盖 name                    |
-| neon-safekeeper.statefulSet.resources.limits.cpu      | string | `"200m"`                         | CPU 上限（测试环境）         |
-| neon-safekeeper.statefulSet.resources.limits.memory   | string | `"256Mi"`                        | 内存上限（测试环境）         |
-| neon-safekeeper.statefulSet.resources.requests.cpu    | string | `"200m"`                         | CPU 请求                     |
-| neon-safekeeper.statefulSet.resources.requests.memory | string | `"256Mi"`                        | 内存请求                     |
-| neon-safekeeper.statefulSet.storage.size              | string | `"2Gi"`                          | PVC 大小（测试环境）         |
-| neon-safekeeper.settings.brokerEndpoint               | string | `"http://neon-broker-svc:50051"` | broker 地址                  |
+| Key                                                   | Type   | Default                            | Description                                     |
+| ----------------------------------------------------- | ------ | ---------------------------------- | ----------------------------------------------- |
+| neon-safekeeper.enabled                               | bool   | `true`                           | 是否启用                                        |
+| neon-safekeeper.nameOverride                          | string | `"safekeeper"`                   | 覆盖 name                                       |
+| neon-safekeeper.statefulSet.resources.limits.cpu      | string | `"200m"`                         | CPU 上限（测试环境）                            |
+| neon-safekeeper.statefulSet.resources.limits.memory   | string | `"256Mi"`                        | 内存上限（测试环境）                            |
+| neon-safekeeper.statefulSet.resources.requests.cpu    | string | `"200m"`                         | CPU 请求                                        |
+| neon-safekeeper.statefulSet.resources.requests.memory | string | `"256Mi"`                        | 内存请求                                        |
+| neon-safekeeper.statefulSet.storage.size              | string | `"2Gi"`                          | PVC 大小（测试环境）                            |
+| neon-safekeeper.settings.brokerEndpoint               | string | `"http://neon-broker-svc:50051"` | broker 地址                                     |
 | neon-safekeeper.rbac.nodeReader.enabled               | bool   | `true`                           | 是否创建读取节点 zone 标签的 RBAC（nodes: get） |
-| neon-safekeeper.settings.statefulSet.replicas         | int    | `3`                              | 副本数（奇数，SC 要求 >= 3） |
+| neon-safekeeper.settings.statefulSet.replicas         | int    | `3`                              | 副本数（奇数，SC 要求 >= 3）                    |
 
 ### neon-control-plane
 

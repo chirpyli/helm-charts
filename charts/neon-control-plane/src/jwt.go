@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // jwtSigner 用 Ed25519 私钥签发 neon 兼容的 JWT，同时持有公钥用于校验。
@@ -126,4 +127,45 @@ func (s *jwtSigner) verify(token string) (scope string, err error) {
 func (s *jwtSigner) publicKeyHash() string {
 	sum := sha256.Sum256(s.pub)
 	return fmt.Sprintf("%x", sum)
+}
+
+// computeTokenTTL 控制面调用 compute_ctl 时所用 JWT 的有效期。
+//
+// compute_ctl 的 Authorize 把 required_spec_claims 清空了
+// （compute_tools/src/http/middleware/authorize.rs:49），因此 exp 不是必需项；
+// 但 validate_exp 仍为 true（存在 exp 时会校验是否过期），所以带上一个合理的有效期更稳妥，
+// 也能在未来上游收紧 exp 校验时保持一致。
+const computeTokenTTL = 1 * time.Hour
+
+// signComputeToken 签发调用 compute_ctl 用的 JWT（compute-scoped）。
+//
+// 对齐 neon_local 的 Endpoint::generate_jwt(None::<ComputeClaimsScope>)
+// （control_plane/src/endpoint.rs:691-703）：非 Admin scope 时
+//
+//	ComputeClaims { compute_id: Some(endpoint_id), scope: None, audience: None }
+//
+// compute_ctl 的校验分支（compute_tools/src/http/middleware/authorize.rs:93-133）：
+//   - scope == Admin：要求 aud 包含 "compute"；
+//   - 其它（含缺省）：要求 claims.compute_id 等于该 compute 自身的 compute_id。
+//
+// 因此这里只声明 compute_id，不写 scope。
+func (s *jwtSigner) signComputeToken(computeID string) (string, error) {
+	header := map[string]string{"alg": "EdDSA", "typ": "JWT"}
+	payload := map[string]interface{}{
+		"compute_id": computeID,
+		"exp":        time.Now().Add(computeTokenTTL).Unix(),
+	}
+	h, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+	p, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	hb := b64url(h)
+	pb := b64url(p)
+	toSign := []byte(hb + "." + pb)
+	sig := ed25519.Sign(s.priv, toSign)
+	return hb + "." + pb + "." + b64url(sig), nil
 }

@@ -52,10 +52,6 @@ neon-storage-controller:
       cpu: "1"
       memory: 512Mi
   settings:
-    # 注意：外部 PostgreSQL 连接串不再通过 settings.databaseUrl 明文传入。
-    # 改为 global.storageController.databaseUrl.existingSecret 引用外部 Secret，
-    # 子 chart 侧亦可用 neon-storage-controller.settings.databaseUrlSecretName 覆盖。
-    # 严格模式下必填：指向 control plane 的 notify 端点基址（SC 启动即校验）
     controlPlaneUrl: "http://neon-control-plane-svc:8080"
 
 neon-pageserver:
@@ -75,16 +71,6 @@ neon-pageserver:
   settings:
     brokerEndpoint: "http://neon-broker-svc:50051"
     storageControllerUrl: "http://neon-storage-controller-svc:50051"
-    # control_plane_api_token（PS→SC upcall，需 generations_api scope）不再在此填写：
-    # 由 init 容器从共享 JWT Secret 的 generationsApiJwtToken 键读出后写入 pageserver.toml，
-    # 避免 token 明文落进 ConfigMap / Pod spec。
-    # 注意：可用区（AZ）不再静态指定。pageserver 启动时由 init 容器读取所在节点的
-    # topology.kubernetes.io/zone 标签动态获取，并写入 pageserver.toml 与 metadata.json。
-    # 节点未打该标签时 Pod 会停在 Init 状态并报错退出（需先 kubectl label node <node> topology.kubernetes.io/zone=<az>）。
-    # 注意：bucketName / bucketRegion / endpoint 已移除（保留会触发渲染期 fail 守卫）。
-    # 对象存储的连接坐标与凭证统一由 global.storage.bucket.existingSecret 指向的 Secret 提供，
-    # 由 pageserver 的 init 容器在启动时写入 pageserver.toml 的 remote_storage。
-    # prefixInBucket 是布局参数（多环境共享同一桶时隔离路径），仍留在 values。
     remoteStorage:
       prefixInBucket: "pageserver"
 
@@ -133,6 +119,12 @@ neon-control-plane:
     domain: "neon.local"
     nodePortExternalHost: "192.168.232.128"
     computeServiceType: "NodePort"
+    # compute_ctl 外部 HTTP 端口 / SC 对账周期 / 单次 /configure 推送超时。
+    # 与控制面推送重配置（pageserver 故障转移后热更新 compute 路由）相关。
+    computeCtlPort: 3080
+    reconcileIntervalSeconds: 30
+    reconfigureTimeoutSeconds: 120
+    statusReconcileIntervalSeconds: 15
 
 
 local-path-provisioner:
@@ -142,3 +134,7 @@ local-path-provisioner:
   image:
     repository: rancher/local-path-provisioner
     tag: "v0.0.36"
+  config:
+    helperImage:
+      repository: 192.168.232.128:5000/neondatabase/busybox
+      tag: "1.35.0"

@@ -15,5 +15,9 @@ data:
       "compute_image": "{{ .Values.settings.computeImage }}",
       "compute_service_type": "{{ .Values.settings.computeServiceType }}",
       "node_port_external_host": "{{ .Values.settings.nodePortExternalHost }}",
-      "domain": "{{ .Values.settings.domain }}"
+      "domain": "{{ .Values.settings.domain }}",
+      "compute_ctl_port": {{ .Values.settings.computeCtlPort }},
+      "reconcile_interval_seconds": {{ .Values.settings.reconcileIntervalSeconds }},
+      "reconfigure_timeout_seconds": {{ .Values.settings.reconfigureTimeoutSeconds }},
+      "status_reconcile_interval_seconds": {{ .Values.settings.statusReconcileIntervalSeconds }}
     }

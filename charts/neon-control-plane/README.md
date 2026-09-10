@@ -12,10 +12,11 @@ Neon 控制面（轻量 HTTP 服务，提供 project / branch / endpoint 管理 
 2. **Project API**：完整的 project CRUD（创建时自动创建独立 tenant + timeline + endpoint，删除时级联清理 tenant、分支和端点）
 3. **Branch API**：完整的 branch CRUD（创建新 timeline / 列表 / 删除，支持父子分支关系追踪和子分支保护）
 4. **Endpoint API**：完整的 endpoint CRUD（创建 / 列表 / 删除）
-5. **Compute Spec 下发**：`GET /compute/api/v2/computes/{id}/spec`，compute_ctl 启动时拉取
-6. **SC 通知处理**：`/notify-attach` (JWT 鉴权 + 重建 ComputeSpec) / `POST /notify-safekeepers` (JWT 鉴权 + 更新 safekeeper 列表)
-7. **ConfigMap 持久化**：write-through + 去抖落盘，启动时对账恢复
-8. **Proxy 兼容接口**：`wake_compute`、`get_endpoint_access_control`、`jwks` 等 stub
+5. **Compute Spec 下发**：`GET /compute/api/v2/computes/{id}/spec`，compute_ctl 启动时拉取（响应携带 `compute_ctl_config.jwks`）
+6. **SC 通知处理**：`/notify-attach`（JWT 鉴权 + 按 SC locate 重建 ComputeSpec）/ `/notify-safekeepers`（JWT 鉴权 + generation 单调校验后更新 safekeeper 列表）
+7. **存储故障转移自愈**：收到通知或周期对账发现路由变化后，控制面主动 `POST /configure` 把新 spec 推给运行中的 compute，无需重启 Pod（详见下方「存储故障转移与 compute 重配置」）
+8. **ConfigMap 持久化**：write-through + 去抖落盘，启动时对账恢复
+9. **Proxy 兼容接口**：`wake_compute`、`get_endpoint_access_control`、`jwks` 等 stub
 
 ### 技术实现
 
@@ -24,7 +25,13 @@ Neon 控制面（轻量 HTTP 服务，提供 project / branch / endpoint 管理 
 - **SCRAM**：手动 PBKDF2 生成 `SCRAM-SHA-256` 验证器
 - **状态管理**：进程内存（`sync.RWMutex` 保护），project / branch / endpoint 全量追踪
 - **持久化**：K8s ConfigMap `neon-cp-state` 存储 JSON 快照，write-through + 1s 去抖合并写入
-- **启动对账**：从 ConfigMap 加载快照，与 K8s compute Deployment 双向对账修正状态
+- **启动对账**：从 ConfigMap 加载快照，与 K8s compute Deployment 双向对账修正状态，并与 storage_controller 对账存储路由
+- **周期对账**：每 `settings.reconcileIntervalSeconds`（默认 30s）对每个 endpoint 做一次 `tenant_locate`，
+  用**路由指纹**（shard → pageserver 地址）判断本地 spec 是否落后于 SC 真相，落后则重建并推送
+- **compute 鉴权 JWKS**：由 `publicKey.pem`（`JWT_PUBLIC_KEY_PATH`）派生 OKP/Ed25519 JWK，
+  随 spec 下发给 compute，用于校验控制面调用 `/configure` 的 JWT（对齐 neon_local `create_jwks_from_pem`）
+- **重配置推送**：`POST http://neon-compute-<ep>.<ns>.svc.cluster.local:3080/configure`，
+  带 `compute_id` 声明的 JWT；单 worker 队列 + 指数退避，待推送标记持久化
 - **单写者约束**：`replicas: 1` + `Recreate` 策略保证 ConfigMap 写入安全
 - **卸载自动清理**：内置 `pre-delete` 钩子 Job，`helm uninstall` 时自动回收控制面动态创建的资源（详见下方「卸载清理」）
 
@@ -90,6 +97,90 @@ $ kubectl -n neon logs job/neon-neon-control-plane-pre-delete-cleanup
 >   `kubectl -n <ns> delete configmap neon-cp-state`。
 > - 清理范围限定在 release 所在命名空间；同一命名空间部署多个 release 时，标签
 >   `app.kubernetes.io/name=neon-compute` 的 compute 资源会被一并清理。
+
+---
+
+## 存储故障转移与 compute 重配置
+
+### 问题背景
+
+`compute_ctl` **只在启动时拉取一次 spec**。因此 pageserver 故障、shard 迁到其它 pageserver 之后，
+仅更新控制面本地的 spec 是不够的——运行中的 compute 仍连着旧的（可能已下线）pageserver。
+必须把新 spec **主动推送**给 compute，这正是 Neon Cloud / neon_local 的做法：
+控制面构造完整 `ConfigurationRequest{spec, compute_ctl_config}` 后 `POST /configure`
+（`control_plane/src/endpoint.rs:1062-1078`），compute 侧 `write_postgres_conf` + `pg_reload_conf`，
+无需重启 Postgres 即可完成路由热更新。
+
+### 链路
+
+```mermaid
+flowchart LR
+  PS[pageserver 故障] --> SC[storage_controller]
+  SC -- "PUT /notify-attach（10s 超时）" --> N[控制面 notify handler]
+  N -- "1. tenant_locate 重建 spec + 指纹" --> ST[(内存 state + ConfigMap)]
+  N -- "2. 标记 pending" --> Q[重配置队列]
+  N -- "3. 200 / locate 失败 503" --> SC
+  R[启动 + 每 30s 周期对账] -- "指纹比对 → 重建 → 入队" --> Q
+  Q -- "POST /configure + compute_id JWT" --> C[compute_ctl:3080 ClusterIP]
+  C -- "write_postgres_conf + pg_reload_conf" --> PG[(Postgres)]
+```
+
+### 关键设计
+
+| 约束 | 说明 |
+| --- | --- |
+| 10 秒硬约束 | SC 的 `NOTIFY_REQUEST_TIMEOUT` 只有 10s（`compute_hook.rs:28`），notify handler 只做"改内存 + 入队"，推送由后台 worker 异步完成 |
+| 返回 2xx 后 SC 不再重发 | SC 标记 `applied=true`，因此控制面必须自带可靠重试：pending 标记持久化 + 单 worker 指数退避（5s → 60s） |
+| 周期对账兜底 | 通知可能丢失（控制面重启、SC 去重跳过、无可用落点不发），所以每 30s 用路由指纹与 SC 真相比对一次 |
+| locate 失败绝不下发 | 保留现有 spec 并打 WARN，绝不降级为空 shards 或静态清单 |
+| 只推 Empty/Running | compute 处于其它状态时 `/configure` 返回 412，按退避重试 |
+
+### 端口与安全
+
+| Service | 类型 | 端口 | 用途 |
+| --- | --- | --- | --- |
+| `neon-compute-<endpoint_id>` | **ClusterIP（固定）** | 5432 + 3080 | 集群内访问；3080 供控制面推送 `/configure` |
+| `neon-compute-<endpoint_id>-ext` | NodePort（仅 `computeServiceType=NodePort` 时创建） | 5432 | 集群外直连数据库 |
+
+> K8s 的 NodePort Service 会给**所有**端口分配 nodePort，无法只暴露 5432。
+> 3080 是 compute_ctl 的管理端口，绝不能暴露到集群外，因此主 Service 固定 ClusterIP，
+> 需要外部直连时另建只含 5432 的 `-ext` Service。卸载时两者都带
+> `app.kubernetes.io/name=neon-compute` 标签，会被 pre-delete 钩子一起回收。
+
+### 升级注意事项
+
+- **旧 compute 必须重建一次**：`compute_ctl_config.jwks` 只在 compute 启动时读取，
+  存量 compute 不重建就收不到 JWKS，推送会以 401 失败（日志会提示"旧 compute 需重建以加载 JWKS"）。
+  ```console
+  kubectl -n neon delete deploy -l app.kubernetes.io/name=neon-compute
+  ```
+  随后重建 endpoint（或由控制面重新拉起）即可。
+- **JWKS 来源**：`JWT_PUBLIC_KEY_PATH` 指向的 `publicKey.pem`，缺失时回退从私钥派生；
+  不需要新增任何 Secret 键。
+
+### 验证
+
+```console
+# 1) 控制面日志应出现 JWKS 就绪与对账配置
+kubectl -n neon logs deploy/neon-control-plane-svc | grep -E "jwks|compute_ctl port"
+
+# 2) spec 响应应包含 shards map 与 JWKS
+kubectl -n neon exec deploy/neon-control-plane-svc -- \
+  curl -s localhost:8080/compute/api/v2/computes/<endpoint_id>/spec \
+  | jq '.spec.pageserver_connection_info, .compute_ctl_config.jwks'
+
+# 3) 故障演练：删除 pageserver Pod，观察闭环
+kubectl -n neon delete pod neon-pageserver-0
+kubectl -n neon logs deploy/neon-storage-controller-svc | grep notify-attach
+kubectl -n neon logs deploy/neon-control-plane-svc  | grep -E "reconcile|reconfigure"
+
+# 4) compute 侧确认路由已更新（应指向新的 pageserver）
+kubectl -n neon exec deploy/neon-compute-<endpoint_id> -- \
+  psql -U cloud_admin -c "SHOW neon.pageserver_connstring"
+
+# 5) 端口暴露面：3080 不应有 nodePort
+kubectl -n neon get svc -l app.kubernetes.io/name=neon-compute
+```
 
 ---
 
@@ -473,11 +564,19 @@ $ curl http://neon-control-plane-svc:8080/compute/api/v2/computes/ep-aac4db8fe1a
 ```json
 {
   "spec": { /* 完整 ComputeSpec，与创建 endpoint 响应中的 spec 字段一致 */ },
-  "compute_ctl_config": {}
+  "compute_ctl_config": {
+    "jwks": {
+      "keys": [
+        {"kty": "OKP", "crv": "Ed25519", "x": "<base64url 裸公钥>", "use": "sig", "alg": "EdDSA", "kid": "<base64url sha256(裸公钥)>", "key_ops": ["verify"]}
+      ]
+    }
+  }
 }
 ```
 
-> 若 spec 为 nil（如控制面重启后），调用时按需从 SC 重新 locate 并重建 spec。
+> - `compute_ctl_config.jwks` 是 compute_ctl 校验 `/configure`、`/status` 等鉴权路由的依据；
+>   为空会导致这些路由全部 401，控制面也就无法推送重配置。
+> - 若 spec 为 nil 或缺少路由指纹（升级前的老 endpoint），调用时按需从 SC 重新 locate 并重建 spec。
 
 ---
 
@@ -487,33 +586,45 @@ $ curl http://neon-control-plane-svc:8080/compute/api/v2/computes/ep-aac4db8fe1a
 
 #### `PUT /notify-attach` — pageserver 重附着通知
 
-SC 在 pageserver shard 迁移后发送。控制面处理流程：
+SC 在 pageserver shard 迁移（例如 pageserver 故障转移）后发送。控制面处理流程：
 
 1. JWT 鉴权（校验签名 + scope 含 `ControlPlane`）
-2. 解析请求体（`tenant_id`、`timeline_id`、`generation`）
-3. 向 SC 重新 locate pageserver（获取最新地址）
-4. 更新所有受影响 endpoint 的 `pageserver_connection_info`
-5. 触发 ConfigMap 持久化
+2. 解析请求体（`tenant_id` + `shards[]`，兼容保留 `timeline_id` / `generation`）
+3. 向 SC 重新 locate pageserver —— **SC 才是路由真相源**，通知只说明"attach 变了"
+4. 重建所有受影响 endpoint 的 `pageserver_connection_info` 与路由指纹
+5. 标记 pending 并唤醒重配置 worker（异步 `POST /configure` 推送给 compute）
+6. 立即返回（SC 的 notify 超时只有 10s，推送不能占用请求时间）
 
 ```console
 $ curl -X PUT http://localhost:8080/notify-attach \
   -H "Authorization: Bearer <jwt_token>" \
-  -d '{"tenant_id":"3d1f7595b468230304e0b73cecbcb081","timeline_id":"060488c51cd1...","generation":1}'
+  -d '{"tenant_id":"3d1f7595b468230304e0b73cecbcb081","shards":[{"shard_number":0,"node_id":1}]}'
 ```
 
-**请求体**：
+**请求体**（对齐上游 `NotifyAttachRequest`）：
 
-| 字段            | 类型   | 说明              |
-| --------------- | ------ | ----------------- |
-| `tenant_id`   | string | 受影响的租户 ID   |
-| `timeline_id` | string | 受影响的时间线 ID |
-| `generation`  | int    | 配置版本号        |
+| 字段                    | 类型   | 说明                                    |
+| ----------------------- | ------ | --------------------------------------- |
+| `tenant_id`           | string | 受影响的租户 ID（必填）                 |
+| `shards[].shard_number` | int   | 分片编号                                |
+| `shards[].node_id`     | int   | 该分片所在的 pageserver 节点 ID         |
+| `stripe_size`         | int    | 可选，分片条带大小                      |
+| `timeline_id`         | string | 兼容字段（上游无此字段，仅用于日志）    |
+| `generation`          | int    | 兼容字段（上游无此字段，仅用于日志）    |
 
 **响应** `200 OK`：
 
 ```json
-{"status": "attached", "affected_endpoints": 2}
+{"status": "ok", "endpoints_updated": 2}
 ```
+
+**失败响应**：
+
+| 状态码 | 场景                                                                 |
+| ------ | -------------------------------------------------------------------- |
+| 503    | locate 失败 / 未返回任何 shard（SC 会退避重试；旧实现返回 423 只重试 3 次就放弃） |
+| 401/403 | JWT 无效或 scope 不是 `controlplane`                                 |
+| 400    | 请求体非法                                                           |
 
 > 同时支持 `POST /notify-attach`（兼容测试场景）。
 
@@ -522,9 +633,10 @@ $ curl -X PUT http://localhost:8080/notify-attach \
 SC 在 safekeeper 集合变更后发送。控制面处理流程：
 
 1. JWT 鉴权（校验签名 + scope 含 `ControlPlane`）
-2. 解析请求体（含完整 safekeeper 列表）
-3. 直接更新受影响 endpoint 的 `safekeeper_connstrings`
-4. 触发 ConfigMap 持久化
+2. 解析请求体（含完整 safekeeper 列表与 generation）
+3. **generation 单调校验**：只有 `generation` 不小于已知值时才覆盖，避免乱序/重放的通知把旧集合写回去
+4. 更新受影响 endpoint 的 `safekeeper_connstrings`，并写入 `safekeepers_generation`（compute 会写成 `neon.safekeepers` 的 `g#<generation>:` 前缀）
+5. 标记 pending 并异步推送给 compute
 
 ```console
 $ curl -X PUT http://localhost:8080/notify-safekeepers \
@@ -646,8 +758,10 @@ $ curl http://localhost:8080/endpoints/ep-aac4db8fe1aa217a/jwks
 ### 启动对账流程
 
 1. 从 ConfigMap 加载持久化快照（project/branch/endpoint 映射）
-2. 向 SC 对账 tenant↔timeline 关系（真相源）
-3. List K8s compute Deployment，修正 endpoint.status（`running` / `stopped`）
+2. List K8s compute Deployment，修正 endpoint.status（`running` / `stopped`）
+3. **与 storage controller 对账存储路由**：对每个 endpoint 做 `tenant_locate`，
+   指纹变化则重建 spec 并入队推送（覆盖"控制面停机期间发生的故障转移"）
+4. 启动周期对账（默认每 30s 一轮）与重配置 worker
 
 ---
 
@@ -683,8 +797,10 @@ $ curl http://localhost:8080/endpoints/ep-aac4db8fe1aa217a/jwks
 
 1. **无外部鉴权**：所有业务 API 均可匿名访问（内网部署假设），仅 SC 回调端点在应用层做 JWT 校验
 2. **无恢复窗口**：删除操作即时生效，不支持软删除/回收站恢复
-3. **SCRAM 验证器不持久化**：`scram_verifier` 每次重启重新生成会导致 compute 认证问题（phase-1 可接受）
-4. **JWKS 为空**：proxy 的 JWT 公钥分发未实现，proxy 会 fallback 处理
+3. **SCRAM 明文密码不持久化**：重启后 `get_endpoint_access_control.role_secret` 回退到
+   spec 中已持久化的 `cluster.roles[].encrypted_password`（同一验证器），但**明文密码无法再次获取**
+4. **`/endpoints/{id}/jwks` 仍为空**：该 stub 面向 proxy 的 JWT 公钥分发（phase-2）；
+   注意它与 spec 响应里的 `compute_ctl_config.jwks`（已实现，用于 compute_ctl 鉴权控制面）不是同一个东西
 
 ## 安装
 
@@ -835,6 +951,10 @@ Kubernetes: `^1.18.x-x`
 | serviceAccount.create                | bool   | `true`                                                                                           | 是否创建 ServiceAccount                                              |
 | serviceAccount.name                  | string | `""`                                                                                             | 显式指定 SA 名称                                                     |
 | settings.computeImage                | string | `"neondatabase/neon:latest"`                                                                     | 动态拉起 compute 使用的镜像                                          |
+| settings.computeCtlPort              | int    | `3080`                                                                                           | compute_ctl 外部 HTTP 端口（控制面推送 `/configure` 用，须与 `--external-http-port` 一致） |
+| settings.reconcileIntervalSeconds    | int    | `30`                                                                                             | 与 storage controller 对账存储路由的周期（秒）                        |
+| settings.reconfigureTimeoutSeconds   | int    | `120`                                                                                            | 单次 `/configure` 推送的超时（秒，对齐 neon_local）                   |
+| settings.computeServiceType          | string | `"ClusterIP"`                                                                                    | 对外 Service 类型；`NodePort` 时额外创建只暴露 5432 的 `-ext` Service |
 | settings.domain                      | string | `"neon.local"`                                                                                   | proxy 兼容接口域名（phase-2 启用 proxy 时使用）                      |
 | settings.jwtSecretName               | string | `""`                                                                                             | 共享 JWT Secret 名称（控制面是唯一投影 privateKey.pem 的组件；留空时回退 `global.jwt.existingSecret`） |
 | settings.listenPort                  | int    | `8080`                                                                                           | 控制面自身监听端口                                                   |

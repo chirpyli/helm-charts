@@ -20,7 +20,6 @@ local-path-provisioner 利用节点的本地磁盘提供动态卷供给：当 PV
 - 卷目录默认落在宿主机 `/opt/local-path-provisioner`，节点路径映射、建卷/删卷脚本、helper Pod 均可配置
 - 镜像（provisioner 与 helper 的 busybox）可覆盖，适配私有 registry
 
-> **注意**：本地盘卷不具备跨节点高可用能力，节点故障会导致数据不可用，请勿用于需要强一致或跨节点容灾的生产数据。
 
 ## 架构要点
 
@@ -137,23 +136,17 @@ Kubernetes: `^1.18.x-x`
 | podLabels | object | `{}` | Pod 额外标签 |
 | podSecurityContext | object | `{}` | Pod 安全上下文 |
 | priorityClassName | string | `""` | Pod 优先级类 |
-| replicaCount | int | `1` | 副本数（禁止 > 1，未启用 leader election） |
 | resources.limits.cpu | string | `"200m"` | CPU 上限 |
 | resources.limits.memory | string | `"256Mi"` | 内存上限 |
 | resources.requests.cpu | string | `"50m"` | CPU 请求 |
 | resources.requests.memory | string | `"64Mi"` | 内存请求 |
 | securityContext | object | `{}` | 容器安全上下文 |
 | serviceAccount.annotations | object | `{}` | SA 注解 |
-| serviceAccount.create | bool | `true` | 是否创建 ServiceAccount |
-| serviceAccount.name | string | `""` | 显式指定 SA 名称 |
-| storageClass.allowVolumeExpansion | bool | `false` | 是否允许卷扩容 |
+| serviceAccount.create | bool | `true` | 是否创建 ServiceAccount（名称固定为 local-path-provisioner-service-account，不可配置） |
 | storageClass.annotations | object | `{}` | StorageClass 附加注解 |
 | storageClass.create | bool | `true` | 是否创建 StorageClass |
-| storageClass.isDefaultClass | bool | `false` | 是否设为集群默认 StorageClass |
 | storageClass.name | string | `"local-path"` | StorageClass 名称 |
-| storageClass.provisioner | string | `"rancher.io/local-path"` | 供给者标识（不可随意修改） |
 | storageClass.reclaimPolicy | string | `"Delete"` | PV 回收策略 |
-| storageClass.volumeBindingMode | string | `"WaitForFirstConsumer"` | 卷绑定模式（本地盘必须为 WaitForFirstConsumer） |
 | tolerations | list | `[]` | 容忍 |
 
 ----------------------------------------------

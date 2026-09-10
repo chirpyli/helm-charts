@@ -28,10 +28,7 @@ settings:
   sentryUrl: ""
   # settings.sentryEnvironment -- "development" or "production". It will be visible in sentry in order to filter issues
   sentryEnvironment: "development"
-  # -- 外部 PostgreSQL 连接串所在的 Secret 名称（必填，chart 不创建它）。
-  # storage_controller 只支持两种取到连接串的方式（见 storage_controller/src/main.rs
-  # 的 Secrets::load）：CLI `--database-url` 或环境变量 DATABASE_URL，其中 CLI 会把密码
-  # 暴露在 Pod spec 里，因此本 chart 统一用 env.secretKeyRef 注入 DATABASE_URL。
+  # -- 外部 PostgreSQL 连接串所在的 Secret 名称
   databaseUrlSecretName: "storage-controller-pg-cluster"
   # -- 上述 Secret 中存放连接串的键名。
   databaseUrlSecretKey: "uri"
@@ -139,6 +136,11 @@ registerControlPlane:
     requests:
       cpu: 100m
       memory: 128Mi
+  # -- 注册 Job 的 init 容器镜像（需包含 kubectl，用于探测节点 zone 标签）。
+  # 默认复用控制面镜像 neondatabase/neon：集群节点已验证可拉取且内置 /usr/bin/kubectl。
+  # 不要用 bitnami/kubectl（本环境镜像代理白名单不含 bitnami/*，拉取会 not found）。
+  # 私有仓库/离线环境可覆盖为可达镜像。
+  kubectlImage: "neondatabase/neon:latest"
 
 serviceAccount:
   # serviceAccount.create - Specifies whether a service account should be created

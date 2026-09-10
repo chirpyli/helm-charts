@@ -5,20 +5,15 @@ metadata:
   name: {{ .Values.storageClass.name }}
   labels:
     {{- include "local-path-provisioner.labels" . | nindent 4 }}
-  {{- if or .Values.storageClass.isDefaultClass .Values.storageClass.annotations }}
+  {{- with .Values.storageClass.annotations }}
   annotations:
-    {{- if .Values.storageClass.isDefaultClass }}
-    # 设为集群默认 StorageClass
-    storageclass.kubernetes.io/is-default-class: "true"
-    {{- end }}
-    {{- with .Values.storageClass.annotations }}
     {{- toYaml . | nindent 4 }}
-    {{- end }}
   {{- end }}
-# 供给者标识，必须与 provisioner 注册的一致
-provisioner: {{ .Values.storageClass.provisioner }}
-# 本地盘必须使用 WaitForFirstConsumer：等 Pod 调度后再决定卷落在哪个节点
-volumeBindingMode: {{ .Values.storageClass.volumeBindingMode }}
+# 供给者标识，必须与 provisioner 注册的一致；固定为 rancher.io/local-path，不可配置
+provisioner: rancher.io/local-path
+# 本地盘必须使用 WaitForFirstConsumer：等 Pod 调度后再决定卷落在哪个节点（固定值，不可配置）
+volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
-allowVolumeExpansion: {{ .Values.storageClass.allowVolumeExpansion }}
+# 本地盘依赖底层文件系统，固定不允许卷扩容（false，不可配置）
+allowVolumeExpansion: false
 {{- end }}

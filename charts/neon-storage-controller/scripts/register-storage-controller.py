@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 
+#  Helm post-install 钩子脚本,作用是把 storage controller 作为一条"虚拟 pageserver"
+# 记录注册进 control plane(cplane)的 pageserver 注册表,让 cplane 后续把存储相关操作路由给
+# storage controller。
+
 import os
 import json
 import logging

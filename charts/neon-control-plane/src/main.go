@@ -38,9 +38,6 @@ var (
 //   - project_id → tenant_id
 //   - branch_id → (tenant_id, timeline_id)
 //   - endpoint_id → (tenant_id, timeline_id, compute_pod_name, status)
-//
-// 注意：不再保存"默认租户 / 默认时间线"。tenant 与 timeline 一律由 POST /projects 按需创建，
-// 每个 project 独占一个 tenant，因此不存在全局默认分支的概念。
 type state struct {
 	mu        sync.RWMutex
 	projects  map[string]*Project
@@ -67,6 +64,18 @@ func main() {
 	if cfg.ListenPort == 0 {
 		cfg.ListenPort = 8080
 	}
+	// compute_ctl 端口 / 对账周期 / 推送超时：未配置时填默认值。
+	// 取值统一走 computeCtlPort() / reconcileInterval() / reconfigureTimeout()，
+	// 这里补默认只是为了启动日志里能看到实际生效值。
+	if cfg.ComputeCtlPort == 0 {
+		cfg.ComputeCtlPort = defaultComputeCtlPort
+	}
+	if cfg.ReconcileIntervalSeconds == 0 {
+		cfg.ReconcileIntervalSeconds = defaultReconcileIntervalSeconds
+	}
+	if cfg.ReconfigureTimeoutSeconds == 0 {
+		cfg.ReconfigureTimeoutSeconds = defaultReconfigureTimeoutSeconds
+	}
 
 	// 初始化 JWT 签发器（含公钥用于校验）
 	signer, err = newJWTSigner(os.Getenv("JWT_PRIVATE_KEY_PATH"))
@@ -74,10 +83,15 @@ func main() {
 		log.Fatalf("jwt signer: %v", err)
 	}
 
+	// 初始化 compute_ctl 鉴权用的 JWKS。
+	// compute_ctl 外部 HTTP 服务的鉴权路由（/configure、/status）用它校验控制面请求，
+	// JWKS 缺失会导致推送重配置时 401（故障转移闭环断在最后一公里）。
+	initComputeJWKS()
+
 	// 初始化 SC 客户端
 	sc = newSCClient(cfg.StorageControllerURL, signer)
 
-	// 初始化进程内状态（不再有默认 tenant，全部由 POST /projects 按需创建）
+	// 初始化进程内状态
 	st = &state{
 		projects:  map[string]*Project{},
 		branches:  map[string]*Branch{},
@@ -99,6 +113,14 @@ func main() {
 	// 启动对账：从 ConfigMap 恢复状态 + K8s 真相对账
 	reconcileOnStartup()
 
+	// 启动与 storage controller 的周期对账 + compute 重配置推送 worker。
+	// 必须先于 HTTP 服务启动：故障转移发生在控制面停机期间时，只有这里能补上路由。
+	startReconciler()
+
+	// 启动 endpoint 运行时状态对账（K8s + compute_ctl /status 周期探测）。
+	// 必须先于 HTTP 服务启动：控制面重启后内存/ConfigMap 里的 status 可能已落后于 K8s 真相。
+	startStatusReconciler()
+
 	// 注册 HTTP 路由
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", apiHandler)
@@ -106,6 +128,8 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.ListenPort)
 	log.Printf("neon-control-plane listening on %s", addr)
 	log.Printf("  storage-controller: %s", cfg.StorageControllerURL)
+	log.Printf("  compute_ctl port=%d reconcile_interval=%s reconfigure_timeout=%s status_reconcile_interval=%s",
+		cfg.ComputeCtlPort, reconcileInterval(), reconfigureTimeout(), statusReconcileInterval())
 	// 节点信息不在本地配置中：运行时从 SC 查询（见 logStorageNodes 与 resolvePageserverInfo/resolveSafekeeperConns）
 
 	if err := http.ListenAndServe(addr, mux); err != nil {
@@ -192,9 +216,13 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 //
 // 当 kc 为 nil（控制面未运行在集群内）或 NodePort 回读失败时，
 // 自动回退到 ClusterIP 形式，保证至少返回一个可用地址。
-func computeEndpointAddress(kc *kubeClient, svcName string) string {
-	if cfg.ComputeServiceType == "NodePort" && kc != nil {
-		if nodePort, err := kc.getServiceNodePort(svcName); err == nil && nodePort > 0 {
+//
+// 注意：NodePort 模式下必须回读**对外 Service**（neon-compute-<ep>-ext）的 nodePort，
+// 主 Service 已固定为 ClusterIP，不再分配 nodePort（见 buildComputeService 的说明）。
+func computeEndpointAddress(kc *kubeClient, endpointID string) string {
+	svcName := computeServiceName(endpointID)
+	if needsExternalService() && kc != nil {
+		if nodePort, err := kc.getServiceNodePort(computeExternalServiceName(endpointID)); err == nil && nodePort > 0 {
 			host := cfg.NodePortExternalHost
 			if host == "" {
 				// 未配置外部主机时回退本机地址，便于同机直连排查。
@@ -336,13 +364,20 @@ func createProject(w http.ResponseWriter, r *http.Request) {
 			logWarn("createProject %s: create compute deployment %s: %v",
 				projectID, ep.EndpointID, err)
 		} else {
-			ep.Status = "running"
+			ep.Status = EndpointStatusProvisioning
 			log.Printf("createProject %s: compute deployment %s created",
 				projectID, ep.EndpointID)
 		}
 		if err := kc.createService(buildComputeService(ep)); err != nil {
 			logWarn("createProject %s: create compute service %s: %v",
 				projectID, ep.EndpointID, err)
+		}
+		// NodePort 模式额外创建只暴露 5432 的对外 Service（主 Service 恒为 ClusterIP）。
+		if needsExternalService() {
+			if err := kc.createService(buildComputeExternalService(ep)); err != nil {
+				logWarn("createProject %s: create compute external service %s: %v",
+					projectID, ep.EndpointID, err)
+			}
 		}
 	}
 
@@ -359,7 +394,7 @@ func createProject(w http.ResponseWriter, r *http.Request) {
 			{
 				"connection_uri": fmt.Sprintf(
 					"postgresql://%s@%s/%s",
-					roleName, computeEndpointAddress(kc, computeServiceName(ep.EndpointID)), databaseName,
+					roleName, computeEndpointAddress(kc, ep.EndpointID), databaseName,
 				),
 				"connection_parameters": fmt.Sprintf(
 					"{\"database\":\"%s\",\"role\":\"%s\"}", databaseName, roleName,
@@ -856,7 +891,9 @@ func prepareEndpointForBranch(projectID, tenantID, timelineID, branchID,
 		ScramVerifier: verifier,
 		ScramPassword: scramPassword,
 		Spec:          spec,
-		Status:        "created",
+		Status:        EndpointStatusProvisioning,
+		// 记录创建时的存储路由指纹，作为后续"spec 是否落后于 SC 真相"的基线。
+		RouteFingerprint: routeFingerprint(spec.PageserverConnectionInfo),
 	}, scramPassword, nil
 }
 
@@ -954,11 +991,17 @@ func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
 		if err := kc.createDeployment(buildComputeDeployment(ep)); err != nil {
 			logWarn("createEndpoint %s: create compute deployment: %v", ep.EndpointID, err)
 		} else {
-			ep.Status = "running"
+			ep.Status = EndpointStatusProvisioning
 			log.Printf("createEndpoint %s: compute deployment created", ep.EndpointID)
 		}
 		if err := kc.createService(buildComputeService(ep)); err != nil {
 			logWarn("createEndpoint %s: create compute service: %v", ep.EndpointID, err)
+		}
+		// NodePort 模式额外创建只暴露 5432 的对外 Service。
+		if needsExternalService() {
+			if err := kc.createService(buildComputeExternalService(ep)); err != nil {
+				logWarn("createEndpoint %s: create compute external service: %v", ep.EndpointID, err)
+			}
 		}
 	}
 
@@ -969,7 +1012,7 @@ func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
 		"endpoint": ep,
 		"connection_uri": fmt.Sprintf(
 			"postgresql://%s@%s/%s",
-			roleName, computeEndpointAddress(kc, computeServiceName(ep.EndpointID)), databaseName,
+			roleName, computeEndpointAddress(kc, ep.EndpointID), databaseName,
 		),
 		"password": scramPassword,
 	})
@@ -1043,6 +1086,12 @@ func cleanupK8sComputeResources(endpointID string) {
 	if err := kc.deleteService(svcName); err != nil {
 		logWarn("deleteEndpoint %s: delete service: %v", endpointID, err)
 	}
+
+	// 对外 Service（NodePort）可能不存在（ClusterIP 模式下不创建），删除失败只记日志。
+	extSvcName := computeExternalServiceName(endpointID)
+	if err := kc.deleteService(extSvcName); err != nil {
+		logWarn("deleteEndpoint %s: delete external service: %v", endpointID, err)
+	}
 }
 
 // =============================================================================
@@ -1067,10 +1116,14 @@ func getComputeSpec(w http.ResponseWriter, r *http.Request, computeID string) {
 	//   1) 缓存的 spec 为空 / 无 cluster 配置；
 	//   2) 缺少 listen_addresses（老 spec）；
 	//   3) **没有任何 pageserver 分片信息** —— 说明上次创建时 SC 尚未完成调度，
-	//      这里每次轮询都重试一次 locate，实现自愈（compute_ctl 本就周期性拉取 spec）。
-	// 否则复用缓存，避免每次请求都向 SC 发起 tenantLocate。
+	//      这里每次轮询都重试一次 locate，实现自愈（compute_ctl 本就周期性拉取 spec）；
+	//   4) 缺少路由指纹 —— 升级前持久化的老 endpoint，指纹未知时先重建一次补齐。
+	//
+	// 注意：这里**不做**每请求的 locate 对账。路由是否落后由后台周期对账（reconcileWithSC）
+	// 用指纹判断，避免 compute_ctl 的轮询把 locate 打爆。
 	needRebuild := ep.Spec == nil || ep.Spec.Cluster == nil ||
-		len(ep.Spec.PageserverConnectionInfo.Shards) == 0
+		len(ep.Spec.PageserverConnectionInfo.Shards) == 0 ||
+		ep.RouteFingerprint == ""
 	if !needRebuild && ep.Spec.Cluster.Settings != nil {
 		hasListen := false
 		for _, o := range *ep.Spec.Cluster.Settings {
@@ -1091,20 +1144,22 @@ func getComputeSpec(w http.ResponseWriter, r *http.Request, computeID string) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 			return
 		}
+		st.mu.Lock()
 		ep.Spec = spec
+		// 重建后同步指纹，保证后续对账能正确判断"spec 是否已跟上 SC 真相"。
+		ep.RouteFingerprint = routeFingerprint(spec.PageserverConnectionInfo)
+		st.mu.Unlock()
 	}
 
 	// 对齐 compute_ctl 的 ControlPlaneConfigResponse 反序列化结构：
 	//   - status: 必需，"attached" 表示 compute 已绑定到 endpoint
-	//   - compute_ctl_config.jwks: 必需，当前传空的 keys 列表
+	//   - compute_ctl_config.jwks: 必需 —— 这里下发控制面自己的 Ed25519 公钥（OKP/Ed25519）。
+	//     compute_ctl 用它校验 /configure、/status 等鉴权路由的请求；
+	//     下发空 keys 会让这些路由全部 401，控制面就无法推送重配置（见 jwks.go 说明）。
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"spec":   ep.Spec,
-		"status": "attached",
-		"compute_ctl_config": map[string]interface{}{
-			"jwks": map[string]interface{}{
-				"keys": []interface{}{},
-			},
-		},
+		"spec":               ep.Spec,
+		"status":             "attached",
+		"compute_ctl_config": computeCtlConfigFor(),
 	})
 }
 
@@ -1123,8 +1178,15 @@ func getEndpointAccessControl(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "endpoint not found"})
 		return
 	}
+	// role_secret 取 SCRAM 验证器。ScramVerifier 刻意不持久化（避免密钥落 ConfigMap），
+	// 因此控制面重启后内存值为空；此时回退到已持久化的 spec.cluster.roles[].encrypted_password
+	// —— 两者本就是同一个验证器，避免 proxy 拿到空密钥导致鉴权失败。
+	roleSecret := ep.ScramVerifier
+	if roleSecret == "" && ep.Spec != nil && ep.Spec.Cluster != nil && len(ep.Spec.Cluster.Roles) > 0 {
+		roleSecret = ep.Spec.Cluster.Roles[0].EncryptedPassword
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"role_secret":              ep.ScramVerifier,
+		"role_secret":              roleSecret,
 		"allowed_ips":              []string{},
 		"allowed_vpc_endpoint_ids": []string{},
 		"block_public_connections": false,
@@ -1155,7 +1217,7 @@ func wakeCompute(w http.ResponseWriter, r *http.Request) {
 	// 构造对外地址：NodePort 模式回读节点端口，否则返回集群内 DNS。
 	kc, _ := newKubeClient()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"address":     computeEndpointAddress(kc, computeServiceName(endpointish)),
+		"address":     computeEndpointAddress(kc, endpointish),
 		"server_name": nil,
 		"aux": map[string]string{
 			"endpoint_id":     endpointish,
@@ -1274,16 +1336,13 @@ func resolvePageserverInfo(ctx context.Context, tenantID string) (PageserverConn
 		}
 		return PageserverConnInfo{}, fmt.Errorf("locate tenant %s failed: %w", tenantID, err)
 	}
-	shards := buildShardsFromLocate(loc)
-	if len(shards) == 0 {
+	// 统一走 buildPageserverConnInfo，保证与 notify-attach / 周期对账生成的 spec 完全一致。
+	connInfo := buildPageserverConnInfo(loc)
+	if len(connInfo.Shards) == 0 {
 		return PageserverConnInfo{}, fmt.Errorf(
 			"locate tenant %s 未返回任何 shard：SC 可能尚未完成调度（pageserver 是否已自注册且 Active）", tenantID)
 	}
-	return PageserverConnInfo{
-		ShardCount: loc.ShardParams.ShardCount,
-		StripeSize: loc.ShardParams.StripeSize,
-		Shards:     shards,
-	}, nil
+	return connInfo, nil
 }
 
 // resolveSafekeeperConns 从 SC 获取 Active safekeeper 的连接串列表（host:port）。

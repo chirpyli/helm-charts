@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 )
 
 // kubeClient 通过 in-cluster ServiceAccount 直接调用 Kubernetes API（无 client-go 依赖）。
@@ -143,6 +145,120 @@ func (k *kubeClient) listComputeDeployments() ([]string, error) {
 		names = append(names, item.Metadata.Name)
 	}
 	return names, nil
+}
+
+// =============================================================================
+// compute 运行时状态查询（供 endpoint.Status 对账）
+//
+// 仅看 Deployment 对象是否存在不足以判断 compute 健康度：Pod 崩溃 / 镜像拉取失败 /
+// 节点被驱逐时 Deployment 对象依然存在，但 compute 早已不可用。因此这里额外读取
+// Deployment 的 readyReplicas，并在副本未就绪时进一步看 Pod 是否处于失败终端态。
+// =============================================================================
+
+// deploymentStatus 描述一个 compute Deployment 的运行时状态，供控制面对账 endpoint.Status。
+type deploymentStatus struct {
+	Exists        bool   // 是否存在对应 Deployment（404 视为不存在，属合法情况）
+	ReadyReplicas int32  // status.readyReplicas
+	Replicas      int32  // status.replicas
+	PodFailed     bool   // 是否存在处于失败终端态的 Pod（CrashLoopBackOff / ImagePullBackOff / Failed 等）
+	PodReason     string // Pod 失败原因（来自 containerStatuses.state.waiting.reason 或 pod phase）
+}
+
+// getDeploymentStatus 读取指定 compute Deployment 的运行时状态。
+// Deployment 不存在（404）时返回 Exists=false 且不报错——这是 endpoint 处于 stopped 的合法情况。
+func (k *kubeClient) getDeploymentStatus(name string) (deploymentStatus, error) {
+	path := fmt.Sprintf("/apis/apps/v1/namespaces/%s/deployments/%s", k.namespace, name)
+	data, code, err := k.doRequest(http.MethodGet, path, nil)
+	if err != nil {
+		return deploymentStatus{}, fmt.Errorf("get deployment %s: %w", name, err)
+	}
+	if code == 404 {
+		return deploymentStatus{Exists: false}, nil
+	}
+	if code >= 300 {
+		return deploymentStatus{}, fmt.Errorf("get deployment %s -> HTTP %d: %s", name, code, string(data))
+	}
+	var dep struct {
+		Status struct {
+			ReadyReplicas int32 `json:"readyReplicas"`
+			Replicas      int32 `json:"replicas"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(data, &dep); err != nil {
+		return deploymentStatus{}, fmt.Errorf("parse deployment %s: %w", name, err)
+	}
+	ds := deploymentStatus{
+		Exists:        true,
+		ReadyReplicas: dep.Status.ReadyReplicas,
+		Replicas:      dep.Status.Replicas,
+	}
+	// 副本未就绪时进一步看 Pod 是否处于失败终端态：避免把"崩溃循环"误报成"启动中"。
+	if ds.ReadyReplicas == 0 {
+		if podFailed, reason := k.getPodFailureReason(name); podFailed {
+			ds.PodFailed = true
+			ds.PodReason = reason
+		}
+	}
+	return ds, nil
+}
+
+// podFailureWaitingReasons 容器内处于 waiting 状态时，哪些 reason 算"失败终端态"。
+// 这些原因意味着 Pod 不会自愈，应当把 endpoint 标记为 failed 而不是 provisioning。
+var podFailureWaitingReasons = map[string]bool{
+	"CrashLoopBackOff":           true,
+	"ImagePullBackOff":           true,
+	"ErrImagePull":               true,
+	"CreateContainerConfigError": true,
+	"CreateContainerError":       true,
+	"InvalidImageName":           true,
+}
+
+// getPodFailureReason 判断该 Deployment 下的 Pod 是否处于失败终端态。
+// 通过 labelSelector=app.kubernetes.io/name=neon-compute,app.kubernetes.io/instance=<endpointID>
+// 定位 Pod（endpointID 由 Deployment 名 neon-compute-<id> 反推）。
+func (k *kubeClient) getPodFailureReason(deploymentName string) (bool, string) {
+	endpointID := strings.TrimPrefix(deploymentName, "neon-compute-")
+	sel := "app.kubernetes.io/name=neon-compute,app.kubernetes.io/instance=" + endpointID
+	path := fmt.Sprintf("/api/v1/namespaces/%s/pods?labelSelector=%s",
+		k.namespace, url.QueryEscape(sel))
+	data, code, err := k.doRequest(http.MethodGet, path, nil)
+	if err != nil || code >= 300 {
+		return false, ""
+	}
+	var list struct {
+		Items []struct {
+			Status struct {
+				Phase             string `json:"phase"`
+				ContainerStatuses []struct {
+					State struct {
+						Waiting struct {
+							Reason string `json:"reason"`
+						} `json:"waiting"`
+						Terminated struct {
+							Reason string `json:"reason"`
+						} `json:"terminated"`
+					} `json:"state"`
+				} `json:"containerStatuses"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(data, &list); err != nil {
+		return false, ""
+	}
+	for _, pod := range list.Items {
+		if pod.Status.Phase == "Failed" {
+			return true, "pod phase=Failed"
+		}
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Terminated.Reason != "" {
+				return true, "container terminated: " + cs.State.Terminated.Reason
+			}
+			if podFailureWaitingReasons[cs.State.Waiting.Reason] {
+				return true, cs.State.Waiting.Reason
+			}
+		}
+	}
+	return false, ""
 }
 
 // =============================================================================
@@ -356,19 +472,18 @@ func buildComputeDeployment(ep *Endpoint) map[string]interface{} {
 	}
 }
 
-// buildComputeService 构造 compute Pod 的 Service。
-// Service 类型由 cfg.ComputeServiceType 决定：
-//   - "NodePort"：集群外可通过 <节点IP>:<nodePort> 直连（无 proxy / LoadBalancer 场景）。
-//   - 其他（含空 / "ClusterIP"）：默认 ClusterIP，仅集群内可达。
+// buildComputeService 构造 compute 的**主 Service**（固定 ClusterIP）。
+//
+// 端口：5432（postgres）+ compute_ctl 端口（默认 3080，控制面用它推送 /configure）。
+//
+// 为什么主 Service 恒为 ClusterIP：K8s 的 NodePort Service 会给**所有**端口都分配 nodePort，
+// 无法做到"只暴露 5432"。3080 是 compute_ctl 的管理端口（/configure、/status 等），
+// 暴露到集群外等于把计算节点的控制权开放出去；因此主 Service 固定 ClusterIP，
+// 需要集群外直连时另建 neon-compute-<endpoint>-ext（NodePort，仅 5432）。
 func buildComputeService(ep *Endpoint) map[string]interface{} {
 	labels := map[string]interface{}{
 		"app.kubernetes.io/name":     "neon-compute",
 		"app.kubernetes.io/instance": ep.EndpointID,
-	}
-	// Service 类型：未配置或配置非法时兜底为 ClusterIP，保证向后兼容。
-	svcType := cfg.ComputeServiceType
-	if svcType == "" {
-		svcType = "ClusterIP"
 	}
 	return map[string]interface{}{
 		"apiVersion": "v1",
@@ -380,13 +495,48 @@ func buildComputeService(ep *Endpoint) map[string]interface{} {
 		},
 		"spec": map[string]interface{}{
 			"selector": labels,
-			"type":     svcType,
+			"type":     "ClusterIP",
 			"ports": []interface{}{
 				map[string]interface{}{"name": "pg", "port": 5432, "targetPort": 5432},
-				map[string]interface{}{"name": "http", "port": 3080, "targetPort": 3080},
+				// compute_ctl 端口只暴露在集群内，供控制面推送重配置。
+				map[string]interface{}{"name": "http", "port": computeCtlPort(), "targetPort": computeCtlPort()},
 			},
 		},
 	}
+}
+
+// buildComputeExternalService 构造对外的 NodePort Service（**仅**暴露 5432）。
+//
+// 仅在 computeServiceType=NodePort 时创建，用于无 proxy / LoadBalancer 的裸机环境直连。
+// 标签与主 Service 保持一致（app.kubernetes.io/name=neon-compute），
+// 这样卸载时的 pre-delete 清理 Job 按标签批量删除时可以同时回收它。
+func buildComputeExternalService(ep *Endpoint) map[string]interface{} {
+	labels := map[string]interface{}{
+		"app.kubernetes.io/name":     "neon-compute",
+		"app.kubernetes.io/instance": ep.EndpointID,
+	}
+	return map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "Service",
+		"metadata": map[string]interface{}{
+			"name":      computeExternalServiceName(ep.EndpointID),
+			"namespace": podNamespace(),
+			"labels":    labels,
+		},
+		"spec": map[string]interface{}{
+			"selector": labels,
+			"type":     "NodePort",
+			"ports": []interface{}{
+				map[string]interface{}{"name": "pg", "port": 5432, "targetPort": 5432},
+			},
+		},
+	}
+}
+
+// needsExternalService 是否需要额外的对外（NodePort）Service。
+// 只有显式配置 computeServiceType=NodePort 时才创建，默认 ClusterIP 不创建。
+func needsExternalService() bool {
+	return cfg != nil && cfg.ComputeServiceType == "NodePort"
 }
 
 // computeDeploymentName 返回 endpoint 对应的 Deployment 名称。
@@ -394,7 +544,12 @@ func computeDeploymentName(endpointID string) string {
 	return fmt.Sprintf("neon-compute-%s", endpointID)
 }
 
-// computeServiceName 返回 endpoint 对应的 Service 名称。
+// computeServiceName 返回 endpoint 对应的主 Service 名称（ClusterIP）。
 func computeServiceName(endpointID string) string {
 	return fmt.Sprintf("neon-compute-%s", endpointID)
+}
+
+// computeExternalServiceName 返回 endpoint 对应的对外 Service 名称（NodePort，仅 5432）。
+func computeExternalServiceName(endpointID string) string {
+	return fmt.Sprintf("neon-compute-%s-ext", endpointID)
 }

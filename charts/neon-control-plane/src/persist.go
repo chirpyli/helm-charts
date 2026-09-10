@@ -77,8 +77,14 @@ func doPersist() {
 }
 
 // loadPersistedState 从 ConfigMap 加载持久化状态快照。
-// 返回 nil 表示首次启动（ConfigMap 不存在）。
+// 返回 nil 表示首次启动（ConfigMap 不存在）或未运行在集群内（无持久化可用）。
 func loadPersistedState() *PersistedState {
+	// 非集群内环境（本地调试 / 单元测试）kubePersist 为 nil：
+	// 直接返回 nil，避免 nil 指针解引用导致进程启动即 panic。
+	if kubePersist == nil {
+		log.Printf("persist: 非集群内运行，跳过 ConfigMap 状态恢复")
+		return nil
+	}
 	data, err := kubePersist.readConfigMap(stateConfigMapName)
 	if err != nil {
 		log.Printf("WARN persist: read configmap: %v", err)
@@ -179,31 +185,11 @@ func reconcileOnStartup() {
 	// 每个 project 的主分支在创建时就已写入 branches，无需在此兜底补齐。
 }
 
-// reconcileWithK8s 与 K8s 实际 compute Deployment 对账。
-// 修正 endpoint.status：K8s 中存在的 Deployment 标记为 running，不存在的标记为 stopped。
+// reconcileWithK8s 与 K8s 实际 compute 运行态对账，修正 endpoint.Status。
+// 直接复用 reconcileEndpointStatuses（周期对账同款逻辑）：覆盖副本就绪度 / Pod 失败 /
+// compute_ctl 内部状态，而不是只看 Deployment 对象是否存在（否则 compute 崩溃后状态会
+// 永久停在 running）。持久化由 reconcileEndpointStatuses 内部按变更去抖触发。
+// 非 K8s 环境（kubePersist==nil）下无任何效果。
 func reconcileWithK8s() {
-	names, err := kubePersist.listComputeDeployments()
-	if err != nil {
-		log.Printf("WARN reconcile: list compute deployments: %v", err)
-		return
-	}
-	log.Printf("reconcile: found %d compute deployments in K8s", len(names))
-
-	existing := make(map[string]bool)
-	for _, name := range names {
-		existing[name] = true
-	}
-
-	st.mu.Lock()
-	defer st.mu.Unlock()
-
-	for _, ep := range st.endpoints {
-		depName := computeDeploymentName(ep.EndpointID)
-		if existing[depName] {
-			ep.Status = "running"
-		} else {
-			ep.Status = "stopped"
-		}
-	}
-	log.Printf("reconcile: state reconciled with K8s")
+	reconcileEndpointStatuses()
 }

@@ -49,17 +49,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Create the name of the service account to use
-*/}}
-{{- define "local-path-provisioner.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create }}
-{{- default (include "local-path-provisioner.fullname" .) .Values.serviceAccount.name }}
-{{- else }}
-{{- default "default" .Values.serviceAccount.name }}
-{{- end }}
-{{- end }}
-
-{{/*
 渲染资源所属的命名空间。
 默认跟随 release 命名空间（不输出 namespace 字段）；
 仅当 namespace.create=true 时创建独立命名空间并显式声明 namespace，
@@ -73,9 +62,3 @@ Create the name of the service account to use
 {{- end -}}
 {{- end }}
 
-{{/*
-ConfigMap 名称（存放 config.json / setup / teardown / helperPod.yaml）
-*/}}
-{{- define "local-path-provisioner.configMapName" -}}
-{{- printf "%s-config" (include "local-path-provisioner.fullname" .) | trunc 63 | trimSuffix "-" }}
-{{- end }}

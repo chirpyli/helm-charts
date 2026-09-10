@@ -33,7 +33,26 @@ settings:
   # -- NodePort 模式下对外的可达主机地址（节点 IP / 域名 / 负载均衡器 VIP）。
   # 仅当 computeServiceType=NodePort 时使用，用于拼接到返回给用户的连接串。
   # 为空时回退为 localhost（仅同机直连排查可用）。
+  # 说明：NodePort 模式下控制面会额外创建只暴露 5432 的对外 Service
+  # （neon-compute-<endpoint>-ext）；主 Service 恒为 ClusterIP，compute_ctl 的
+  # 管理端口不会以 NodePort 形式暴露到集群外。
   nodePortExternalHost: ""
+  # -- compute_ctl 的外部 HTTP 端口（控制面通过它推送 /configure）。
+  # 必须与 compute Deployment 里 --external-http-port 的值一致。
+  computeCtlPort: 3080
+  # -- 与 storage controller 对账的周期（秒）。
+  # 每轮对每个 endpoint 做一次 tenant_locate，用路由指纹判断 spec 是否落后于 SC 真相，
+  # 是 notify 丢失或控制面重启后的兜底自愈手段。
+  reconcileIntervalSeconds: 30
+  # -- 单次 /configure 推送的超时（秒）。
+  # compute_ctl 的 /configure 会阻塞到 compute 进入 Running / Failed 才返回，
+  # neon_local 使用 120s，这里保持一致。
+  reconfigureTimeoutSeconds: 120
+  # -- endpoint 运行时状态对账周期（秒）。
+  # 每轮对每个 endpoint 探测 K8s Deployment/Pod 就绪度 + compute_ctl /status，
+  # 修正 endpoint.Status（compute 崩溃/未就绪能被正确反映，而不是永久停在 running）。
+  # 与 reconcileIntervalSeconds（SC 路由对账）解耦：状态探测更轻量，可更频繁。
+  statusReconcileIntervalSeconds: 15
   # -- proxy 兼容接口域名（phase-2 启用 proxy 时使用）
   domain: "neon.local"
 
@@ -43,9 +62,15 @@ settings:
 # 本 chart 内置一个 pre-delete 钩子 Job，卸载前自动清理这些资源，无需额外开关。
 cleanup:
   image:
-    # -- 清理钩子使用的镜像（需包含 kubectl）；私有仓库环境可通过 --set 覆盖
-    repository: public.ecr.aws/bitnami/kubectl
-    tag: "1.26"
+    # -- 清理钩子使用的镜像（需包含 kubectl）。
+    # 默认复用控制面镜像 neondatabase/neon：该镜像已在集群节点验证可拉取，且内置
+    # /usr/bin/kubectl，无需额外拉取第三方 kubectl 镜像。
+    # 不要用 bitnami/kubectl：本环境节点的镜像代理白名单只有 neondatabase/*、rancher/*、
+    # docker/library/*、busybox，没有 bitnami/*，会导致 pre-delete 钩子拉不到镜像、
+    # helm uninstall 卡在 uninstalling。
+    # 私有仓库/离线环境请用 --set neon-control-plane.cleanup.image.repository=... 覆盖为可达镜像。
+    repository: neondatabase/neon
+    tag: "latest"
     pullPolicy: IfNotPresent
   # -- 清理钩子 Job 的资源配额（清理动作很轻，默认给极小值即可）
   resources:

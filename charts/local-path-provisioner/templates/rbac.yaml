@@ -67,7 +67,8 @@ roleRef:
   name: {{ include "local-path-provisioner.fullname" . }}-role
 subjects:
   - kind: ServiceAccount
-    name: {{ include "local-path-provisioner.serviceAccountName" . }}
+    # 名称固定为 local-path-provisioner-service-account（与 ServiceAccount/Deployment 一致，不可配置）
+    name: local-path-provisioner-service-account
     namespace: {{ include "local-path-provisioner.namespace" . }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -105,5 +106,6 @@ roleRef:
   name: {{ include "local-path-provisioner.fullname" . }}-role
 subjects:
   - kind: ServiceAccount
-    name: {{ include "local-path-provisioner.serviceAccountName" . }}
+    # 名称固定为 local-path-provisioner-service-account（与 ServiceAccount/Deployment 一致，不可配置）
+    name: local-path-provisioner-service-account
     namespace: {{ include "local-path-provisioner.namespace" . }}

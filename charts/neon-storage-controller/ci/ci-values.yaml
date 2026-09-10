@@ -1,0 +1,10 @@
+# chart-testing（ct lint / ct install）使用的默认 values。
+#
+# 必要性：本 chart 把外部 PostgreSQL 连接串 Secret 视为必填项，未配置时模板会在
+# 渲染阶段 fail（见 templates/deployment.yaml 顶部的校验）。helm lint 同样会渲染模板，
+# 因此裸跑 lint 会失败；提供该文件后 CI 可正常校验。
+#
+# 这里只填"引用"，不填任何明文连接串：Secret 实体由集群侧预建（见 docs/neon.yaml）。
+settings:
+  databaseUrlSecretName: "storage-controller-pg-cluster"
+  databaseUrlSecretKey: "uri"

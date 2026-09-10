@@ -7,7 +7,9 @@ provisioner 的运行配置：
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "local-path-provisioner.configMapName" . }}
+  # 名称固定为 local-path-config：local-path-provisioner v0.0.36 二进制会硬编码读取该名称的
+  # ConfigMap（无法通过启动参数更改），改掉会导致 provisioner 启动 fatal 崩溃，故此处写死不可配置。
+  name: local-path-config
   namespace: {{ include "local-path-provisioner.namespace" . }}
   labels:
     {{- include "local-path-provisioner.labels" . | nindent 4 }}

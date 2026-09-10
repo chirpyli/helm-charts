@@ -36,11 +36,6 @@ serviceAccount:
   create: true
   # -- ServiceAccount 注解
   annotations: {}
-  # -- ServiceAccount 名称，留空则使用 fullname 模板生成
-  name: ""
-
-# -- Deployment 副本数。上游 v0.0.36 未启用 leader election，多副本会重复供给卷，禁止 > 1
-replicaCount: 1
 
 # -- 是否给 provisioner 追加 --debug 参数（排障时开启，日常关闭避免高频日志）
 debug: false
@@ -72,6 +67,9 @@ config:
     metadata:
       name: helper-pod
     spec:
+      # 注意：不要在此声明 serviceAccountName。local-path-provisioner v0.0.36 默认会用
+      # "local-path-provisioner-service-account" 作为 helper Pod 的 SA（本 chart 固定该名称，不可配置）；
+      # 若模板里写死 serviceAccountName，二进制会拒绝启动。
       priorityClassName: system-node-critical
       tolerations:
         - key: node.kubernetes.io/disk-pressure
@@ -83,7 +81,10 @@ config:
           imagePullPolicy: {{ .Values.config.helperImage.pullPolicy }}
   # -- helper Pod 使用的镜像（私有仓库场景需覆盖）
   helperImage:
-    repository: busybox
+    # 本环境节点 containerd 无法拉取 docker.io/library/busybox（无外网），故 helper 镜像改用
+    # 已推送到本地镜像仓库的 busybox：192.168.232.128:5000/neondatabase/busybox
+    # （与 neon 系列镜像同源，docker push 到 192.168.232.128:5000 后即可被节点拉取）。
+    repository: 192.168.232.128:5000/neondatabase/busybox
     pullPolicy: IfNotPresent
     tag: "1.35.0"
 
@@ -93,17 +94,8 @@ storageClass:
   create: true
   # -- StorageClass 名称
   name: "local-path"
-  # -- 供给者标识（必须与 provisioner 注册的一致，不可随意修改）
-  provisioner: "rancher.io/local-path"
   # -- PV 回收策略（Delete / Retain）
   reclaimPolicy: Delete
-  # -- 卷绑定模式。本地盘必须 WaitForFirstConsumer，否则调度可能把 Pod 分到没有数据的节点
-  volumeBindingMode: WaitForFirstConsumer
-  # -- 是否允许卷扩容（本地盘依赖底层文件系统，默认关闭）
-  allowVolumeExpansion: false
-  # -- 是否设为集群默认 StorageClass（会加 storageclass.kubernetes.io/is-default-class 注解）。
-  # 默认 false：避免抢占集群默认 SC 影响其他组件，Neon 组件通过 storageClassName 显式引用
-  isDefaultClass: false
   # -- StorageClass 附加注解
   annotations: {}
 

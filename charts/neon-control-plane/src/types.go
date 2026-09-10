@@ -30,6 +30,24 @@ type Config struct {
 	// 拼接到返回给用户的连接串 <NodePortExternalHost>:<nodePort>；为空时回退 localhost。
 	NodePortExternalHost string `json:"node_port_external_host"`
 	Domain               string `json:"domain"`
+
+	// ComputeCtlPort compute_ctl 的外部 HTTP 端口（默认 3080）。
+	// 控制面通过它向 compute 推送重配置（POST /configure），必须与
+	// buildComputeDeployment 里 --external-http-port 传的值一致。
+	ComputeCtlPort int `json:"compute_ctl_port"`
+	// ReconcileIntervalSeconds 与 storage controller 对账的周期（秒，默认 30）。
+	// 每轮对每个 endpoint 做一次 tenant_locate，用路由指纹判断 spec 是否落后于 SC 真相；
+	// 这是 notify 丢失 / 控制面重启后的兜底自愈手段。
+	ReconcileIntervalSeconds int `json:"reconcile_interval_seconds"`
+	// ReconfigureTimeoutSeconds 单次 /configure 推送的 HTTP 超时（秒，默认 120）。
+	// compute_ctl 的 /configure 会阻塞到 compute 进入 Running 或 Failed，
+	// neon_local 使用 120s 超时（control_plane/src/endpoint.rs:1058），这里保持一致。
+	ReconfigureTimeoutSeconds int `json:"reconfigure_timeout_seconds"`
+	// StatusReconcileIntervalSeconds endpoint 运行时状态对账周期（秒，默认 15）。
+	// 每轮对每个 endpoint 探测 K8s Deployment/Pod 就绪度 + compute_ctl /status，
+	// 修正 endpoint.Status（compute 崩溃/未就绪能被正确反映，而不是永久停在 running）。
+	// 与 SC 路由对账（reconcile_interval_seconds）解耦：状态探测更轻量，可更频繁。
+	StatusReconcileIntervalSeconds int `json:"status_reconcile_interval_seconds"`
 }
 
 // NodeInfo SC `GET /control/v1/node` 返回的 pageserver 节点信息（NodeDescribeResponse 的子集）。
@@ -75,6 +93,17 @@ type Branch struct {
 	Default    bool   `json:"default"` // 是否为项目的默认分支（main）
 }
 
+// EndpointStatus* 是控制面对外暴露的 endpoint 聚合状态枚举（endpoint.Status 的取值）。
+// 与 neon_local 的 EndpointStatus(Running/Stopped/Crashed) 及 Neon Cloud 的 compute_ctl
+// ComputeStatus 对齐：本控制面综合"K8s 存活信号 + compute_ctl /status 内部信号"得出。
+const (
+	EndpointStatusProvisioning = "provisioning" // Deployment 存在但 Pod 未就绪（创建/重建/配置中）
+	EndpointStatusRunning      = "running"      // Pod Ready 且 compute_ctl /status=running
+	EndpointStatusStopped      = "stopped"      // K8s 中不存在对应 Deployment（未拉起/已删除）
+	EndpointStatusFailed       = "failed"       // Pod 处于失败终端态 或 compute_ctl /status=failed/termination
+	EndpointStatusUnknown      = "unknown"      // 探测异常（理论上不会出现）
+)
+
 // Endpoint 对应一个运行中的 compute 端点。
 type Endpoint struct {
 	EndpointID    string       `json:"endpoint_id"`
@@ -87,6 +116,28 @@ type Endpoint struct {
 	ScramPassword string       `json:"-"` // 明文密码（仅在创建时返回给用户，不入持久化）
 	Spec          *ComputeSpec `json:"spec"`
 	Status        string       `json:"status"`
+
+	// RouteFingerprint 最近一次"已下发/待下发"的存储路由指纹。
+	// 指纹由 SC locate 结果（shard_id + node_id + libpq 地址）计算，随 endpoint 持久化。
+	// 用途：判断本地缓存的 spec 是否已经落后于 SC 真相——这是 spec 自愈与周期对账的依据，
+	// 否则 notify 丢失或控制面重启时，compute 会一直拿到指向已死 pageserver 的旧 spec。
+	RouteFingerprint string `json:"route_fingerprint,omitempty"`
+	// SafekeeperGeneration 最近一次生效的 safekeeper 成员配置 generation。
+	// SC 的 /notify-safekeepers 可能乱序或重放，只有 generation 更大才允许覆盖。
+	SafekeeperGeneration int64 `json:"safekeeper_generation,omitempty"`
+	// PendingReconfigure 是否有尚未成功推送给 compute 的 spec 变更。
+	// 置 true 后由后台 worker 持续重试；推送成功后清除。持久化保证控制面重启不丢任务。
+	PendingReconfigure bool `json:"pending_reconfigure,omitempty"`
+
+	// ComputeStatus 最近一次探测到的 compute_ctl /status 原始值（snake_case 枚举字符串，如 "running"）。
+	// 仅排障用途；对外聚合状态一律看 Status。
+	ComputeStatus string `json:"compute_status,omitempty"`
+	// StatusMessage 状态附加说明（如失败原因 "CrashLoopBackOff" / "compute status: failed"）。
+	StatusMessage string `json:"status_message,omitempty"`
+	// ReadyReplicas K8s Deployment 当前 ready 副本数（0 表示未就绪）。
+	ReadyReplicas int `json:"ready_replicas,omitempty"`
+	// LastStatusCheck 最近一次状态探测的 Unix 时间戳（秒）。
+	LastStatusCheck int64 `json:"last_status_check,omitempty"`
 }
 
 // =============================================================================
@@ -122,12 +173,38 @@ type BranchCreateRequest struct {
 // Notify 回调类型（SC → control plane 的 compute_hook）
 // =============================================================================
 
+// NotifyAttachRequestShard 对应上游 compute_hook.rs 的 NotifyAttachRequestShard。
+//
+//	pub struct NotifyAttachRequestShard { pub shard_number: ShardNumber, pub node_id: NodeId }
+type NotifyAttachRequestShard struct {
+	ShardNumber int `json:"shard_number"`
+	NodeID      int `json:"node_id"`
+}
+
 // NotifyReAttachRequest SC 在 pageserver shard 迁移后发送的重附着通知。
-// 控制面收到后应从 SC locate 重新获取 pageserver 地址并重建 ComputeSpec。
+//
+// 对齐上游 storage_controller/src/compute_hook.rs:426-455 的 NotifyAttachRequest：
+//
+//	pub struct NotifyAttachRequest {
+//	    pub tenant_id: TenantId,
+//	    pub shards: Vec<NotifyAttachRequestShard>,
+//	    pub stripe_size: Option<ShardStripeSize>,
+//	    pub preferred_az: Option<AvailabilityZone>,
+//	}
+//
+// 上游没有 timeline_id / generation 字段（旧实现里这两个字段恒为零值，日志具有误导性），
+// 这里保留为可选字段仅用于兼容历史报文与日志，不参与业务判断。
+//
+// 控制面收到后应以 SC 的 tenant_locate 为准重新获取 pageserver 地址并重建 ComputeSpec：
+// 通知只说明"该租户的 attach 状态变了"，具体位置必须以 SC 真相源为准。
 type NotifyReAttachRequest struct {
-	TenantID   string `json:"tenant_id"`
-	TimelineID string `json:"timeline_id"`
-	Generation int    `json:"generation"`
+	TenantID    string                     `json:"tenant_id"`
+	Shards      []NotifyAttachRequestShard `json:"shards"`
+	StripeSize  *int                       `json:"stripe_size,omitempty"`
+	PreferredAz *string                    `json:"preferred_az,omitempty"`
+	// 兼容字段：老版本报文 / 手工测试可能携带，仅用于日志。
+	TimelineID string `json:"timeline_id,omitempty"`
+	Generation int    `json:"generation,omitempty"`
 }
 
 // SafekeeperInfo safekeeper 节点信息（由 notify-safekeepers 请求体携带）。

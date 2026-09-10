@@ -3,16 +3,11 @@ local-path-provisioner 已部署到命名空间 {{ include "local-path-provision
 {{ if .Values.storageClass.create -}}
 1. 确认 StorageClass 已就绪：
    kubectl get storageclass {{ .Values.storageClass.name }}
-{{ if not .Values.storageClass.isDefaultClass }}
    该 StorageClass **未**设为集群默认，业务组件需显式引用：
      storageClassName: {{ .Values.storageClass.name }}
 
    例如（Neon 有状态组件）：
      helm upgrade neon ./charts/neon --set neon-pageserver.statefulSet.storage.storageClassName={{ .Values.storageClass.name }}
-
-   如需设为集群默认（谨慎，会影响集群内所有未指定 SC 的 PVC）：
-     helm upgrade {{ .Release.Name }} . --set storageClass.isDefaultClass=true
-{{- end }}
 {{- else -}}
 StorageClass 未创建（storageClass.create=false），请确认集群中已存在名为 {{ .Values.storageClass.name }} 的 StorageClass。
 {{- end }}

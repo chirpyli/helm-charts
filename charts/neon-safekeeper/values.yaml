@@ -73,7 +73,7 @@ statefulSet:
   nodeIdBase: 2000
   storage:
     size: 2Gi
-    storageClassName: ""
+    storageClassName: "local-path"
     mountPath: /var/lib/safekeeper
   # -- Guaranteed QoS：requests == limits（测试环境内存调小；生产建议 CPU >= 2 / 内存 >= 4Gi）
   resources:

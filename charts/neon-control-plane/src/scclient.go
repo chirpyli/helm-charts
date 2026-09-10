@@ -57,7 +57,21 @@ func (c *scClient) do(ctx context.Context, method, path, scope string, body inte
 // =============================================================================
 
 // tenantLocateResult SC debug/v1/tenant/{tid}/locate 的响应结构。
-// SC 返回 Vec<TenantLocateResponseShard>，每个 shard 包含 shard_id (TenantShardId) 和节点信息。
+// 对应上游 TenantLocateResponse：
+//
+//	pub struct TenantLocateResponse {
+//	    pub shards: Vec<TenantLocateResponseShard>,
+//	    pub shard_params: ShardParameters,
+//	}
+//
+// 重要：ShardParameters 的字段名是 **count**，不是 shard_count（见
+// libs/pageserver_api/src/models.rs:480-485）：
+//
+//	pub struct ShardParameters { pub count: ShardCount, pub stripe_size: ShardStripeSize }
+//
+// 旧实现按 shard_count 解析，导致分片数恒为 0，compute 端会把多分片租户当成 1 个分片处理
+// （compute_tools/src/config.rs 中 num_shards = if shard_count.0 == 0 { 1 } else { shard_count.0 }），
+// 分片映射整体错乱。
 type tenantLocateResult struct {
 	Shards []struct {
 		ShardID        string `json:"shard_id"`
@@ -66,11 +80,27 @@ type tenantLocateResult struct {
 		ListenPgPort   int    `json:"listen_pg_port"`
 		ListenHTTP     string `json:"listen_http_addr"`
 		ListenHTTPPort int    `json:"listen_http_port"`
+		// gRPC 地址（可选）：对应 PageserverShardConnectionInfo.grpc_url。
+		// 未启用 gRPC 的 pageserver 不会返回这两个字段，此时 grpc_url 置空。
+		ListenGRPC     string `json:"listen_grpc_addr"`
+		ListenGRPCPort int    `json:"listen_grpc_port"`
 	} `json:"shards"`
 	ShardParams struct {
 		StripeSize int `json:"stripe_size"`
-		ShardCount int `json:"shard_count"`
+		// ShardCount 对应上游的 count 字段（0 表示 unsharded）。
+		ShardCount int `json:"count"`
+		// LegacyShardCount 兼容字段：个别 SC 版本仍返回 shard_count，作为兜底取值。
+		LegacyShardCount int `json:"shard_count"`
 	} `json:"shard_params"`
+}
+
+// shardCount 返回租户的分片数。
+// 优先取上游标准字段 count；缺失时回退旧字段 shard_count；都没有则返回 0（unsharded）。
+func (r *tenantLocateResult) shardCount() int {
+	if r.ShardParams.ShardCount > 0 {
+		return r.ShardParams.ShardCount
+	}
+	return r.ShardParams.LegacyShardCount
 }
 
 // tenantLocate 查询租户的 pageserver 位置（debug/v1 路径，需 Admin scope）。
@@ -88,6 +118,41 @@ func (c *scClient) tenantLocate(ctx context.Context, tenantID string) (*tenantLo
 		return nil, fmt.Errorf("parse locate response: %w", err)
 	}
 	return &result, nil
+}
+
+// parseShardIndex 从 TenantShardId 文本解析 ComputeSpec shards map 所需的 key。
+//
+// 上游事实（已逐条核对源码）：
+//   - TenantShardId 形如 "<32hex tenant>-<4hex shard_slug>"，unsharded 时没有后缀（32 字符）；
+//     ShardSlug = format!("-{:02x}{:02x}", shard_number, shard_count)
+//     （libs/pageserver_api/src/shard.rs:258-264）。
+//   - shards 的 key 类型是 ShardIndex，JSON 序列化即其 Display：
+//     "{shard_number:02x}{shard_count:02x}"（13/17 → "0d11"），
+//     见 libs/utils/src/shard.rs 的 shard_index_human_encoding 测试与 Serialize 实现（413-430）。
+//
+// 因此 shard_id 的 4 位 hex 后缀就是正确的 key；只有 shard_id 格式异常（无后缀 / 后缀非法）
+// 时才用「编号 + 分片数」兜底拼装。注意 unsharded（shard_count=0）时
+// ShardIndex(0,0) 的 key 也是 "0000"，与兜底结果一致。
+func parseShardIndex(shardID string, shardNumber, shardCount int) string {
+	if idx := strings.LastIndex(shardID, "-"); idx >= 0 {
+		suffix := shardID[idx+1:]
+		if len(suffix) == 4 && isHex4(suffix) {
+			return suffix
+		}
+	}
+	return fmt.Sprintf("%02x%02x", shardNumber, shardCount)
+}
+
+// isHex4 判断字符串是否为 4 位十六进制（ShardIndex 的 key 形态）。
+func isHex4(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // safekeeperListResult SC control/v1/safekeeper 的响应。
