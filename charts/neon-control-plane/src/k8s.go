@@ -416,6 +416,33 @@ func (k *kubeClient) sendJSON(method, path string, body interface{}) error {
 // compute Deployment / Service 构造
 // =============================================================================
 
+// computeImagePullPolicy 返回 compute Pod 的镜像拉取策略；未配置或取值非法时回退 IfNotPresent。
+//
+// 为什么默认 IfNotPresent 而不是沿用 K8s 默认行为：
+//  1. compute-node 镜像约 1.3GB，Always 会让每次 Pod 重建（endpoint 重建、节点漂移、
+//     驱逐重启）都重新全量拉取一遍，endpoint 启动被拖到分钟级；
+//  2. Always 把 Pod 可用性直接绑定在镜像仓库可用性上——仓库抖动、或镜像 manifest
+//     被误删（本次 ImagePullBackOff 事故的直接原因）时，节点上明明已有镜像却仍起不来；
+//  3. 控制面拉起的 compute 镜像由 settings.computeImage 固定指定，是"预先分发到各节点"的
+//     确定性产物，不需要每次重新解析。
+//
+// 需要每次都拉最新（例如持续用 :latest 做开发迭代）时，显式配置为 Always 即可。
+func computeImagePullPolicy() string {
+	const defaultPolicy = "IfNotPresent"
+	if cfg == nil || cfg.ComputeImagePullPolicy == "" {
+		return defaultPolicy
+	}
+	switch cfg.ComputeImagePullPolicy {
+	case "Always", "IfNotPresent", "Never":
+		return cfg.ComputeImagePullPolicy
+	default:
+		// 非法值：回退默认而不是把整个 Deployment 创建打失败（K8s API 会拒绝非法枚举）。
+		logWarn("computeImagePullPolicy: 非法取值 %q，回退 %s",
+			cfg.ComputeImagePullPolicy, defaultPolicy)
+		return defaultPolicy
+	}
+}
+
 // buildComputeDeployment 构造 compute Pod 的 Deployment 清单。
 // compute_ctl 从控制面拉取 spec（GET /compute/api/v2/computes/{id}/spec）。
 //
@@ -444,8 +471,9 @@ func buildComputeDeployment(ep *Endpoint) map[string]interface{} {
 				"spec": map[string]interface{}{
 					"containers": []interface{}{
 						map[string]interface{}{
-							"name":  "compute",
-							"image": ep.ComputeImage,
+							"name":            "compute",
+							"image":           ep.ComputeImage,
+							"imagePullPolicy": computeImagePullPolicy(),
 							"command": []interface{}{
 								// compute_ctl 在 compute-node 镜像中位于 /usr/local/bin/；
 								// 使用 bash -c 确保 PATH 包含该路径（与 neon-operator 一致）。

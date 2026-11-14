@@ -115,7 +115,10 @@ neon-control-plane:
     # pageserver 启动时通过 re-attach(metadata.json) 自注册，safekeeper 由 sk-register sidecar 注册并激活，
     # 控制面运行时只从 storage controller 查询（GET /control/v1/node、/control/v1/safekeeper）。
     # compute_ctl 二进制只存在于 compute-node 专用镜像中，不能用 neondatabase/neon 通用镜像。
-    computeImage: "neondatabase/compute-node-v17:latest"
+    computeImage: "192.168.232.128:5000/neondatabase/compute-node-v17:latest"
+    # compute 镜像约 1.3GB，用 IfNotPresent 避免每次 Pod 重建都重拉，
+    # 也避免 Pod 可用性被私有仓库的可用性（或镜像被误删）拖垮。
+    computeImagePullPolicy: "IfNotPresent"
     domain: "neon.local"
     nodePortExternalHost: "192.168.232.128"
     computeServiceType: "NodePort"
@@ -126,9 +129,9 @@ neon-control-plane:
     reconfigureTimeoutSeconds: 120
     statusReconcileIntervalSeconds: 15
 
-
+# 按需配置
 local-path-provisioner:
-  enabled: true
+  enabled: false
   storageClass:
     name: "local-path"
   image:

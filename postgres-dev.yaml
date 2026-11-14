@@ -1,0 +1,89 @@
+# 开发用最小 PostgreSQL（供 storage-controller 作为元数据后端）
+# 应用：kubectl apply -f postgres-dev.yaml -n neon
+# 注意：仅用于测试/开发；生产请使用托管的 PostgreSQL 或 CNPG（需先部署 operator）。
+apiVersion: v1
+kind: Secret
+metadata:
+  name: neon-postgres-secret
+  namespace: neon
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: neonpass
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: neon-postgres-data
+  namespace: neon
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neon-postgres
+  namespace: neon
+  labels:
+    app: neon-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: neon-postgres
+  template:
+    metadata:
+      labels:
+        app: neon-postgres
+    spec:
+      # CNPG postgres 镜像默认以非 root 用户运行，无法 chmod 挂载的 PVC 数据目录。
+      # 本命名空间无 Pod 安全策略限制，故以 root 运行 entrypoint 完成初始化（initdb/chmod），
+      # entrypoint 初始化完毕后会自行切换到 postgres 用户启动服务。
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: postgres
+          # 注意：本环境 docker.io 不可达，使用 ghcr.io 上的 CNPG PostgreSQL 镜像
+          # （其 entrypoint 与官方 postgres 一致，支持 POSTGRES_PASSWORD / POSTGRES_DB）
+          image: ghcr.io/cloudnative-pg/postgresql:16.8
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: neon-postgres-secret
+                  key: POSTGRES_PASSWORD
+            # 官方 postgres 镜像会在首次初始化时自动创建该数据库
+            - name: POSTGRES_DB
+              value: storage_controller
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: neon-postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: neon-postgres
+  namespace: neon
+spec:
+  selector:
+    app: neon-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

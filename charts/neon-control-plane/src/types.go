@@ -21,6 +21,10 @@ type Config struct {
 	StorageControllerURL string `json:"storage_controller_url"`
 	ListenPort           int    `json:"listen_port"`
 	ComputeImage         string `json:"compute_image"`
+	// ComputeImagePullPolicy 动态拉起的 compute Pod 的镜像拉取策略：Always / IfNotPresent / Never。
+	// 未配置或取值非法时回退 IfNotPresent（见 computeImagePullPolicy()）。
+	// 注意：K8s 对 :latest 标签默认 Always，因此必须显式下发该字段才能覆盖默认行为。
+	ComputeImagePullPolicy string `json:"compute_image_pull_policy"`
 	// ComputeServiceType 动态拉起的 compute Service 类型：ClusterIP（默认）或 NodePort。
 	// NodePort 用于集群外直连（无 proxy / LoadBalancer 场景）。
 	// 说明：compute 只能由控制面通过 K8s API 动态拉起（创建 Deployment + Service），

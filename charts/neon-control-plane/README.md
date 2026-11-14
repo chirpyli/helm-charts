@@ -2,7 +2,6 @@
 
 Neon 控制面（轻量 HTTP 服务，提供 project / branch / endpoint 管理 API，对接 storage_controller 完成存储调度）。
 
-
 ## 简介
 
 `neon-control-plane` 是一个常驻运行的轻量HTTP服务，对外暴露Neon v2风格REST API，供用户使用。
@@ -28,6 +27,9 @@ Neon 控制面（轻量 HTTP 服务，提供 project / branch / endpoint 管理 
 - **启动对账**：从 ConfigMap 加载快照，与 K8s compute Deployment 双向对账修正状态，并与 storage_controller 对账存储路由
 - **周期对账**：每 `settings.reconcileIntervalSeconds`（默认 30s）对每个 endpoint 做一次 `tenant_locate`，
   用**路由指纹**（shard → pageserver 地址）判断本地 spec 是否落后于 SC 真相，落后则重建并推送
+- **运行时状态对账**：每 `settings.statusReconcileIntervalSeconds`（默认 15s）探测每个 endpoint 的
+  K8s Deployment/Pod 就绪度 + compute_ctl `/status`，修正 `endpoint.status`
+  （`provisioning` / `running` / `failed` / `stopped`），避免 compute 崩溃后状态仍停在 `running`
 - **compute 鉴权 JWKS**：由 `publicKey.pem`（`JWT_PUBLIC_KEY_PATH`）派生 OKP/Ed25519 JWK，
   随 spec 下发给 compute，用于校验控制面调用 `/configure` 的 JWT（对齐 neon_local `create_jwks_from_pem`）
 - **重配置推送**：`POST http://neon-compute-<ep>.<ns>.svc.cluster.local:3080/configure`，
@@ -44,11 +46,11 @@ Neon 控制面（轻量 HTTP 服务，提供 project / branch / endpoint 管理 
 控制面在运行期通过 in-cluster K8s API **动态创建**以下资源，它们**不在任何 Helm 清单中**，
 `helm uninstall` 默认只会删除 release 清单里的对象，这些动态资源会变成孤儿资源长期残留：
 
-| 资源 | 名称 / 选择方式 | 创建位置（`src/k8s.go`） |
-| ---- | --------------- | ------------------------ |
-| Deployment | `neon-compute-<endpoint_id>`，标签 `app.kubernetes.io/name=neon-compute` | `buildComputeDeployment` |
-| Service | `neon-compute-<endpoint_id>`，标签 `app.kubernetes.io/name=neon-compute` | `buildComputeService` |
-| ConfigMap | `neon-cp-state`（控制面状态快照） | `doPersist` / `upsertConfigMap` |
+| 资源       | 名称 / 选择方式                                                              | 创建位置（`src/k8s.go`）          |
+| ---------- | ---------------------------------------------------------------------------- | ----------------------------------- |
+| Deployment | `neon-compute-<endpoint_id>`，标签 `app.kubernetes.io/name=neon-compute` | `buildComputeDeployment`          |
+| Service    | `neon-compute-<endpoint_id>`，标签 `app.kubernetes.io/name=neon-compute` | `buildComputeService`             |
+| ConfigMap  | `neon-cp-state`（控制面状态快照）                                          | `doPersist` / `upsertConfigMap` |
 
 ### 实现
 
@@ -104,9 +106,7 @@ $ kubectl -n neon logs job/neon-neon-control-plane-pre-delete-cleanup
 
 ### 问题背景
 
-`compute_ctl` **只在启动时拉取一次 spec**。因此 pageserver 故障、shard 迁到其它 pageserver 之后，
-仅更新控制面本地的 spec 是不够的——运行中的 compute 仍连着旧的（可能已下线）pageserver。
-必须把新 spec **主动推送**给 compute，这正是 Neon Cloud / neon_local 的做法：
+`compute_ctl` **只在启动时拉取一次 spec**。因此 pageserver 故障、shard 迁到其它 pageserver 之后，仅更新控制面本地的 spec 是不够的——运行中的 compute 仍连着旧的（可能已下线）pageserver。必须把新 spec **主动推送**给 compute，这正是 Neon Cloud / neon_local 的做法：
 控制面构造完整 `ConfigurationRequest{spec, compute_ctl_config}` 后 `POST /configure`
 （`control_plane/src/endpoint.rs:1062-1078`），compute 侧 `write_postgres_conf` + `pg_reload_conf`，
 无需重启 Postgres 即可完成路由热更新。
@@ -127,20 +127,20 @@ flowchart LR
 
 ### 关键设计
 
-| 约束 | 说明 |
-| --- | --- |
-| 10 秒硬约束 | SC 的 `NOTIFY_REQUEST_TIMEOUT` 只有 10s（`compute_hook.rs:28`），notify handler 只做"改内存 + 入队"，推送由后台 worker 异步完成 |
-| 返回 2xx 后 SC 不再重发 | SC 标记 `applied=true`，因此控制面必须自带可靠重试：pending 标记持久化 + 单 worker 指数退避（5s → 60s） |
-| 周期对账兜底 | 通知可能丢失（控制面重启、SC 去重跳过、无可用落点不发），所以每 30s 用路由指纹与 SC 真相比对一次 |
-| locate 失败绝不下发 | 保留现有 spec 并打 WARN，绝不降级为空 shards 或静态清单 |
-| 只推 Empty/Running | compute 处于其它状态时 `/configure` 返回 412，按退避重试 |
+| 约束                    | 说明                                                                                                                               |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 10 秒硬约束             | SC 的`NOTIFY_REQUEST_TIMEOUT` 只有 10s（`compute_hook.rs:28`），notify handler 只做"改内存 + 入队"，推送由后台 worker 异步完成 |
+| 返回 2xx 后 SC 不再重发 | SC 标记`applied=true`，因此控制面必须自带可靠重试：pending 标记持久化 + 单 worker 指数退避（5s → 60s）                          |
+| 周期对账兜底            | 通知可能丢失（控制面重启、SC 去重跳过、无可用落点不发），所以每 30s 用路由指纹与 SC 真相比对一次                                   |
+| locate 失败绝不下发     | 保留现有 spec 并打 WARN，绝不降级为空 shards 或静态清单                                                                            |
+| 只推 Empty/Running      | compute 处于其它状态时`/configure` 返回 412，按退避重试                                                                          |
 
 ### 端口与安全
 
-| Service | 类型 | 端口 | 用途 |
-| --- | --- | --- | --- |
-| `neon-compute-<endpoint_id>` | **ClusterIP（固定）** | 5432 + 3080 | 集群内访问；3080 供控制面推送 `/configure` |
-| `neon-compute-<endpoint_id>-ext` | NodePort（仅 `computeServiceType=NodePort` 时创建） | 5432 | 集群外直连数据库 |
+| Service                            | 类型                                                 | 端口        | 用途                                        |
+| ---------------------------------- | ---------------------------------------------------- | ----------- | ------------------------------------------- |
+| `neon-compute-<endpoint_id>`     | **ClusterIP（固定）**                          | 5432 + 3080 | 集群内访问；3080 供控制面推送`/configure` |
+| `neon-compute-<endpoint_id>-ext` | NodePort（仅`computeServiceType=NodePort` 时创建） | 5432        | 集群外直连数据库                            |
 
 > K8s 的 NodePort Service 会给**所有**端口分配 nodePort，无法只暴露 5432。
 > 3080 是 compute_ctl 的管理端口，绝不能暴露到集群外，因此主 Service 固定 ClusterIP，
@@ -154,6 +154,7 @@ flowchart LR
   ```console
   kubectl -n neon delete deploy -l app.kubernetes.io/name=neon-compute
   ```
+
   随后重建 endpoint（或由控制面重新拉起）即可。
 - **JWKS 来源**：`JWT_PUBLIC_KEY_PATH` 指向的 `publicKey.pem`，缺失时回退从私钥派生；
   不需要新增任何 Secret 键。
@@ -502,14 +503,14 @@ $ curl -X POST http://localhost:8080/projects/proj-176db416e9091dd9/endpoints \
       "settings": {}
     }
   },
-  "status": "created",
+  "status": "provisioning",
   "connection_uri": "postgresql://cloud_admin@neon-compute-ep-aac4db8fe1aa217a.default.svc.cluster.local:5432/postgres"
 }
 ```
 
 > - `mode` 根据 `type` 自动设置：`"read_write"` → `"Primary"`，`"read_only"` → `"Replica"`
 > - pageserver 和 safekeeper 信息优先从 SC 动态获取，失败时回退到 `values.yaml` 静态配置
-> - `status` 为 `"created"`；若 compute Deployment 创建成功则为 `"running"`
+> - `status` 创建后为 `"provisioning"`；随后由**运行时状态对账**自动收敛：Pod 就绪且 compute_ctl `/status=running` → `"running"`，Pod/ compute 失败 → `"failed"`，无 Deployment → `"stopped"`
 
 **动态拉起 compute**：compute 节点没有静态部署形态，创建 endpoint 时控制面必然通过 K8s API 创建 Deployment（命名格式 `neon-compute-{endpoint_id}`）和 Service（类型由 `settings.computeServiceType` 决定）。容器启动命令：
 
@@ -603,14 +604,14 @@ $ curl -X PUT http://localhost:8080/notify-attach \
 
 **请求体**（对齐上游 `NotifyAttachRequest`）：
 
-| 字段                    | 类型   | 说明                                    |
-| ----------------------- | ------ | --------------------------------------- |
-| `tenant_id`           | string | 受影响的租户 ID（必填）                 |
-| `shards[].shard_number` | int   | 分片编号                                |
-| `shards[].node_id`     | int   | 该分片所在的 pageserver 节点 ID         |
-| `stripe_size`         | int    | 可选，分片条带大小                      |
-| `timeline_id`         | string | 兼容字段（上游无此字段，仅用于日志）    |
-| `generation`          | int    | 兼容字段（上游无此字段，仅用于日志）    |
+| 字段                      | 类型   | 说明                                 |
+| ------------------------- | ------ | ------------------------------------ |
+| `tenant_id`             | string | 受影响的租户 ID（必填）              |
+| `shards[].shard_number` | int    | 分片编号                             |
+| `shards[].node_id`      | int    | 该分片所在的 pageserver 节点 ID      |
+| `stripe_size`           | int    | 可选，分片条带大小                   |
+| `timeline_id`           | string | 兼容字段（上游无此字段，仅用于日志） |
+| `generation`            | int    | 兼容字段（上游无此字段，仅用于日志） |
 
 **响应** `200 OK`：
 
@@ -620,11 +621,11 @@ $ curl -X PUT http://localhost:8080/notify-attach \
 
 **失败响应**：
 
-| 状态码 | 场景                                                                 |
-| ------ | -------------------------------------------------------------------- |
-| 503    | locate 失败 / 未返回任何 shard（SC 会退避重试；旧实现返回 423 只重试 3 次就放弃） |
-| 401/403 | JWT 无效或 scope 不是 `controlplane`                                 |
-| 400    | 请求体非法                                                           |
+| 状态码  | 场景                                                                              |
+| ------- | --------------------------------------------------------------------------------- |
+| 503     | locate 失败 / 未返回任何 shard（SC 会退避重试；旧实现返回 423 只重试 3 次就放弃） |
+| 401/403 | JWT 无效或 scope 不是`controlplane`                                             |
+| 400     | 请求体非法                                                                        |
 
 > 同时支持 `POST /notify-attach`（兼容测试场景）。
 
@@ -914,52 +915,53 @@ Kubernetes: `^1.18.x-x`
 
 ## Values
 
-| Key                                  | Type   | Default                                                                                            | Description                                                          |
-| ------------------------------------ | ------ | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| affinity                             | object | `{}`                                                                                             | 亲和性                                                               |
-| cleanup.image.pullPolicy             | string | `"IfNotPresent"`                                                                                 | 卸载清理钩子（pre-delete Job）镜像拉取策略                           |
-| cleanup.image.repository             | string | `"public.ecr.aws/bitnami/kubectl"`                                                               | 卸载清理钩子镜像（需包含 kubectl，私有仓库可覆盖）                   |
-| cleanup.image.tag                    | string | `"1.26"`                                                                                         | 卸载清理钩子镜像 tag                                                 |
-| extraManifests                       | list   | `[]`                                                                                             | 额外创建的 K8s 清单                                                  |
-| fullnameOverride                     | string | `""`                                                                                             | 完全覆盖 fullname 模板                                               |
-| global                               | object | `{}`                                                                                             | 全局配置                                                             |
-| image.pullPolicy                     | string | `"IfNotPresent"`                                                                                 | 镜像拉取策略                                                         |
-| image.repository                     | string | `"192.168.232.128:5000/neondatabase/neon-control-plane"`                                        | 控制面镜像（由 src/ 自行构建并推送到私有仓库）                       |
-| image.tag                            | string | `"latest"`                                                                                       | 覆盖镜像 tag                                                         |
-| imagePullSecrets                     | list   | `[]`                                                                                             | docker-registry secret 列表                                          |
-| metrics.enabled                      | bool   | `false`                                                                                          | 启用 Prometheus 指标自动发现                                         |
-| metrics.serviceMonitor.enabled       | bool   | `false`                                                                                          | 创建 ServiceMonitor 资源                                             |
-| metrics.serviceMonitor.interval      | string | `"10s"`                                                                                          | Prometheus 抓取间隔                                                  |
-| metrics.serviceMonitor.namespace     | string | `""`                                                                                             | ServiceMonitor 命名空间                                              |
-| metrics.serviceMonitor.scrapeTimeout | string | `"10s"`                                                                                          | 抓取超时                                                             |
-| metrics.serviceMonitor.selector      | object | `{}`                                                                                             | 附加标签                                                             |
-| nameOverride                         | string | `""`                                                                                             | 部分覆盖 fullname 模板                                               |
-| nodeSelector                         | object | `{}`                                                                                             | 节点选择                                                             |
-| podAnnotations                       | object | `{}`                                                                                             | Pod 注解                                                             |
-| podDisruptionBudget.minAvailable     | int    | `1`                                                                                              | 最小可用副本数                                                       |
-| podLabels                            | object | `{}`                                                                                             | Pod 额外标签                                                         |
-| podSecurityContext                   | object | `{}`                                                                                             | Pod 安全上下文                                                       |
-| priorityClassName                    | string | `""`                                                                                             | Pod 优先级类                                                         |
-| resources.limits.cpu                 | string | `"100m"`                                                                                         | CPU 上限（测试环境；生产建议 >= 500m）                               |
-| resources.limits.memory              | string | `"128Mi"`                                                                                        | 内存上限（测试环境；生产建议 >= 256Mi）                              |
-| resources.requests.cpu               | string | `"100m"`                                                                                         | CPU 请求（Guaranteed QoS）                                           |
-| resources.requests.memory            | string | `"128Mi"`                                                                                        | 内存请求（Guaranteed QoS）                                           |
-| securityContext                      | object | `{}`                                                                                             | 容器安全上下文                                                       |
-| service.port                         | int    | `8080`                                                                                           | Service 端口                                                         |
-| service.type                         | string | `"ClusterIP"`                                                                                    | Service 类型                                                         |
-| serviceAccount.annotations           | object | `{}`                                                                                             | SA 注解                                                              |
-| serviceAccount.create                | bool   | `true`                                                                                           | 是否创建 ServiceAccount                                              |
-| serviceAccount.name                  | string | `""`                                                                                             | 显式指定 SA 名称                                                     |
-| settings.computeImage                | string | `"neondatabase/neon:latest"`                                                                     | 动态拉起 compute 使用的镜像                                          |
-| settings.computeCtlPort              | int    | `3080`                                                                                           | compute_ctl 外部 HTTP 端口（控制面推送 `/configure` 用，须与 `--external-http-port` 一致） |
-| settings.reconcileIntervalSeconds    | int    | `30`                                                                                             | 与 storage controller 对账存储路由的周期（秒）                        |
-| settings.reconfigureTimeoutSeconds   | int    | `120`                                                                                            | 单次 `/configure` 推送的超时（秒，对齐 neon_local）                   |
-| settings.computeServiceType          | string | `"ClusterIP"`                                                                                    | 对外 Service 类型；`NodePort` 时额外创建只暴露 5432 的 `-ext` Service |
-| settings.domain                      | string | `"neon.local"`                                                                                   | proxy 兼容接口域名（phase-2 启用 proxy 时使用）                      |
-| settings.jwtSecretName               | string | `""`                                                                                             | 共享 JWT Secret 名称（控制面是唯一投影 privateKey.pem 的组件；留空时回退 `global.jwt.existingSecret`） |
-| settings.listenPort                  | int    | `8080`                                                                                           | 控制面自身监听端口                                                   |
-| settings.storageControllerUrl        | string | `"http://neon-storage-controller-svc:50051"`                                                     | storage_controller 基址（含端口）                                    |
-| tolerations                          | list   | `[]`                                                                                             | 容忍                                                                 |
+| Key                                  | Type   | Default                                                    | Description                                                                                             |
+| ------------------------------------ | ------ | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| affinity                             | object | `{}`                                                     | 亲和性                                                                                                  |
+| cleanup.image.pullPolicy             | string | `"IfNotPresent"`                                         | 卸载清理钩子（pre-delete Job）镜像拉取策略                                                              |
+| cleanup.image.repository             | string | `"public.ecr.aws/bitnami/kubectl"`                       | 卸载清理钩子镜像（需包含 kubectl，私有仓库可覆盖）                                                      |
+| cleanup.image.tag                    | string | `"1.26"`                                                 | 卸载清理钩子镜像 tag                                                                                    |
+| extraManifests                       | list   | `[]`                                                     | 额外创建的 K8s 清单                                                                                     |
+| fullnameOverride                     | string | `""`                                                     | 完全覆盖 fullname 模板                                                                                  |
+| global                               | object | `{}`                                                     | 全局配置                                                                                                |
+| image.pullPolicy                     | string | `"IfNotPresent"`                                         | 镜像拉取策略                                                                                            |
+| image.repository                     | string | `"192.168.232.128:5000/neondatabase/neon-control-plane"` | 控制面镜像（由 src/ 自行构建并推送到私有仓库）                                                          |
+| image.tag                            | string | `"latest"`                                               | 覆盖镜像 tag                                                                                            |
+| imagePullSecrets                     | list   | `[]`                                                     | docker-registry secret 列表                                                                             |
+| metrics.enabled                      | bool   | `false`                                                  | 启用 Prometheus 指标自动发现                                                                            |
+| metrics.serviceMonitor.enabled       | bool   | `false`                                                  | 创建 ServiceMonitor 资源                                                                                |
+| metrics.serviceMonitor.interval      | string | `"10s"`                                                  | Prometheus 抓取间隔                                                                                     |
+| metrics.serviceMonitor.namespace     | string | `""`                                                     | ServiceMonitor 命名空间                                                                                 |
+| metrics.serviceMonitor.scrapeTimeout | string | `"10s"`                                                  | 抓取超时                                                                                                |
+| metrics.serviceMonitor.selector      | object | `{}`                                                     | 附加标签                                                                                                |
+| nameOverride                         | string | `""`                                                     | 部分覆盖 fullname 模板                                                                                  |
+| nodeSelector                         | object | `{}`                                                     | 节点选择                                                                                                |
+| podAnnotations                       | object | `{}`                                                     | Pod 注解                                                                                                |
+| podDisruptionBudget.minAvailable     | int    | `1`                                                      | 最小可用副本数                                                                                          |
+| podLabels                            | object | `{}`                                                     | Pod 额外标签                                                                                            |
+| podSecurityContext                   | object | `{}`                                                     | Pod 安全上下文                                                                                          |
+| priorityClassName                    | string | `""`                                                     | Pod 优先级类                                                                                            |
+| resources.limits.cpu                 | string | `"100m"`                                                 | CPU 上限（测试环境；生产建议 >= 500m）                                                                  |
+| resources.limits.memory              | string | `"128Mi"`                                                | 内存上限（测试环境；生产建议 >= 256Mi）                                                                 |
+| resources.requests.cpu               | string | `"100m"`                                                 | CPU 请求（Guaranteed QoS）                                                                              |
+| resources.requests.memory            | string | `"128Mi"`                                                | 内存请求（Guaranteed QoS）                                                                              |
+| securityContext                      | object | `{}`                                                     | 容器安全上下文                                                                                          |
+| service.port                         | int    | `8080`                                                   | Service 端口                                                                                            |
+| service.type                         | string | `"ClusterIP"`                                            | Service 类型                                                                                            |
+| serviceAccount.annotations           | object | `{}`                                                     | SA 注解                                                                                                 |
+| serviceAccount.create                | bool   | `true`                                                   | 是否创建 ServiceAccount                                                                                 |
+| serviceAccount.name                  | string | `""`                                                     | 显式指定 SA 名称                                                                                        |
+| settings.computeImage                | string | `"neondatabase/neon:latest"`                             | 动态拉起 compute 使用的镜像                                                                             |
+| settings.computeImagePullPolicy      | string | `"IfNotPresent"`                                         | compute Pod 镜像拉取策略（`Always`/`IfNotPresent`/`Never`）；`:latest` 在 K8s 下默认 `Always`，1.3GB 镜像建议用 `IfNotPresent` |
+| settings.computeCtlPort              | int    | `3080`                                                   | compute_ctl 外部 HTTP 端口（控制面推送`/configure` 用，须与 `--external-http-port` 一致）           |
+| settings.reconcileIntervalSeconds    | int    | `30`                                                     | 与 storage controller 对账存储路由的周期（秒）                                                          |
+| settings.reconfigureTimeoutSeconds   | int    | `120`                                                    | 单次`/configure` 推送的超时（秒，对齐 neon_local）                                                    |
+| settings.computeServiceType          | string | `"ClusterIP"`                                            | 对外 Service 类型；`NodePort` 时额外创建只暴露 5432 的 `-ext` Service                               |
+| settings.domain                      | string | `"neon.local"`                                           | proxy 兼容接口域名（phase-2 启用 proxy 时使用）                                                         |
+| settings.jwtSecretName               | string | `""`                                                     | 共享 JWT Secret 名称（控制面是唯一投影 privateKey.pem 的组件；留空时回退`global.jwt.existingSecret`） |
+| settings.listenPort                  | int    | `8080`                                                   | 控制面自身监听端口                                                                                      |
+| settings.storageControllerUrl        | string | `"http://neon-storage-controller-svc:50051"`             | storage_controller 基址（含端口）                                                                       |
+| tolerations                          | list   | `[]`                                                     | 容忍                                                                                                    |
 
 -------------------------------------------## Helm Chart 打包
 

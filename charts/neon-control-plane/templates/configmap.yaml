@@ -13,6 +13,7 @@ data:
       "storage_controller_url": "{{ .Values.settings.storageControllerUrl }}",
       "listen_port": {{ .Values.settings.listenPort }},
       "compute_image": "{{ .Values.settings.computeImage }}",
+      "compute_image_pull_policy": "{{ .Values.settings.computeImagePullPolicy }}",
       "compute_service_type": "{{ .Values.settings.computeServiceType }}",
       "node_port_external_host": "{{ .Values.settings.nodePortExternalHost }}",
       "domain": "{{ .Values.settings.domain }}",
