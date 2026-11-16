@@ -296,10 +296,13 @@ $ curl http://localhost:8080/projects/proj-176db416e9091dd9
 级联删除 project 下的所有 branch 和 endpoint：
 
 1. 收集该 project 下所有 endpoint，逐个清理 K8s 资源（Deployment + Service）
-2. 对该 project 下所有 branch，向 SC 请求删除对应 timeline（best-effort）
-3. 向 SC 请求删除该项目独占的 tenant（best-effort）
-4. 移除 project、所有 branch、所有 endpoint 的内存记录
+2. **先向 SC 请求删除该项目独占的 tenant**（tenant 删除会级联清理其下所有 timeline），best-effort
+3. 若 tenant 删除失败，再按 **子分支 → 父分支** 的顺序逐个删除 timeline（SC 拒绝删除仍有子 timeline 的父 timeline）
+4. 移除 project、所有 branch、所有 endpoint、roles/databases 与对应 Secret
 5. 事务化写入外部 PG 独立库
+
+> `branches[].timeline_deleted` 在 tenant 删除成功时统一为 `true`（timeline 由 tenant 级联删除）；
+> 只有 tenant 删除失败进入逐条清理时，才可能出现单个 branch 的 `error`。
 
 ```console
 $ curl -X DELETE http://localhost:8080/projects/proj-176db416e9091dd9
@@ -565,6 +568,254 @@ $ curl -X DELETE http://localhost:8080/projects/proj-176db416e9091dd9/endpoints/
 
 ---
 
+### Region 与单资源查询
+
+#### `GET /regions` — 列出可用 region
+
+自托管部署只有单一 region，`region_id` 来自 `settings.regionId`（默认 `default`）：
+
+```console
+$ curl http://localhost:8080/regions
+{
+  "regions": [
+    {"region_id": "default", "name": "Default region", "default": true, "geo_lat": "", "geo_long": ""}
+  ]
+}
+```
+
+#### `GET /projects/{project_id}/branches/{branch_id}` — 查询单个分支
+
+不存在或跨 project 访问统一返回 `404 {"error":"branch not found"}`（不区分资源是否存在，避免探测）。
+
+```console
+$ curl http://localhost:8080/projects/proj-176db416e9091dd9/branches/br-7f1358d3afab2d9c
+{
+  "branch_id": "br-7f1358d3afab2d9c",
+  "project_id": "proj-176db416e9091dd9",
+  "tenant_id": "3d1f7595b468230304e0b73cecbcb081",
+  "timeline_id": "7a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+  "name": "main",
+  "default": true
+}
+```
+
+#### `GET /projects/{project_id}/endpoints/{endpoint_id}` — 查询单个 endpoint
+
+响应与 list 的元素结构一致；`current_state` 由 `status` 派生（`init`/`active`/`idle`）。
+
+```console
+$ curl http://localhost:8080/projects/proj-176db416e9091dd9/endpoints/ep-aac4db8fe1aa217a
+{
+  "endpoint_id": "ep-aac4db8fe1aa217a",
+  "project_id": "proj-176db416e9091dd9",
+  "tenant_id": "3d1f7595b468230304e0b73cecbcb081",
+  "timeline_id": "7a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+  "branch_id": "br-7f1358d3afab2d9c",
+  "compute_image": "neondatabase/neon:latest",
+  "type": "read_write",
+  "status": "running",
+  "current_state": "active",
+  "route_fingerprint": "7345f70d35db321dc829fcbecb94367104a0ba6e416a0181d90d8f542f962917"
+}
+```
+
+#### `GET /projects/{project_id}/branches/{branch_id}/endpoints` — 分支 endpoint 列表
+
+返回该分支的主节点与只读副本数组，按 `endpoint_id` 升序（Endpoint 没有持久化 `created_at`）：
+
+```console
+$ curl http://localhost:8080/projects/proj-176db416e9091dd9/branches/br-7f1358d3afab2d9c/endpoints
+[
+  {"endpoint_id": "ep-aac4db8fe1aa217a", "type": "read_write", "status": "running", ...},
+  {"endpoint_id": "ep-b4b10084d62c5824", "type": "read_only",  "status": "running", ...}
+]
+```
+
+---
+
+### Roles（分支级角色）
+
+角色属于 **branch**，不属于 endpoint。SCRAM verifier 存在独立 Secret（`neon-cp-role-<hash>`）中，
+库中只保存 Secret 引用；**明文密码仅在创建角色 / 重置密码时返回一次**，`GET` 永不返回密码。
+
+#### `POST /projects/{pid}/branches/{bid}/roles` — 创建角色
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `role.name` | string | 是 | PG 标识符：`^[A-Za-z_][A-Za-z0-9_$]{0,62}$` |
+| `role.no_login` | bool | 否 | 当前版本不支持；为 `true` 时返回 `400` |
+
+```console
+$ curl -X POST http://localhost:8080/projects/proj-176db416e9091dd9/branches/br-7f1358d3afab2d9c/roles \
+  -H "Content-Type: application/json" \
+  -d '{"role":{"name":"app_user"}}'
+```
+
+**响应** `201 Created`：
+
+```json
+{
+  "role": {
+    "branch_id": "br-7f1358d3afab2d9c",
+    "name": "app_user",
+    "password": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+    "protected": false,
+    "created_at": "2026-11-16T03:30:00Z",
+    "updated_at": "2026-11-16T03:30:00Z"
+  },
+  "operations": [{"action": "apply_config", "status": "finished"}]
+}
+```
+
+> `password` 只在这里出现一次，请立即保存。角色创建通过更新 ComputeSpec 并推送
+> compute `/configure` 生效；`config` 失败时返回 `503` 并回滚 registry/Secret。
+
+#### `GET /projects/{pid}/branches/{bid}/roles` — 列出角色
+
+```json
+{
+  "roles": [
+    {"branch_id": "br-...", "name": "app_user", "protected": false, "created_at": "...", "updated_at": "..."},
+    {"branch_id": "br-...", "name": "sally", "protected": true, "created_at": "...", "updated_at": "..."}
+  ]
+}
+```
+
+按 `name` 升序；**不包含 `password`**。
+
+#### `GET /projects/{pid}/branches/{bid}/roles/{role_name}` — 单个角色
+
+`200 {"role": {...}}`；不存在 → `404`。同样不返回密码。
+
+#### `DELETE /projects/{pid}/branches/{bid}/roles/{role_name}` — 删除角色
+
+- `protected=true`（项目初始角色）→ `403`；
+- 角色仍拥有数据库 → `409`，响应附带数据库列表：
+
+```json
+{"error": "role still owns databases", "databases": ["app_db"]}
+```
+
+成功后返回 `{"role": {...}, "operations": [...]}`。
+
+#### `POST /projects/{pid}/branches/{bid}/roles/{role_name}/reset_password` — 重置密码
+
+无请求体；返回新的明文密码（仅此一次）：
+
+```json
+{
+  "role": {"branch_id": "br-...", "name": "app_user", "password": "<新密码>", "protected": false, ...},
+  "operations": [{"action": "apply_config", "status": "finished"}]
+}
+```
+
+- 旧密码立即失效；`protected` 角色 → `403`；
+- `/configure` 失败时恢复旧 verifier 并返回 `503`。
+
+#### `GET /projects/{pid}/branches/{bid}/roles/{role_name}/reveal_password` — 取回密码
+
+控制面只保存 SCRAM verifier、不保存明文，固定返回：
+
+```json
+// 501 Not Implemented
+{"error": "控制面不保存明文密码，请使用 reset_password"}
+```
+
+---
+
+### Databases（分支级数据库）
+
+数据库同样属于 branch；`owner_name` 必须是同分支已存在的角色。官方 `Database.id`（整型）
+本控制面不提供，响应中省略该字段。
+
+#### `POST /projects/{pid}/branches/{bid}/databases` — 创建数据库
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `database.name` | string | 是 | PG 标识符（同角色名规则） |
+| `database.owner_name` | string | 是 | 同分支已存在的角色名 |
+
+```console
+$ curl -X POST http://localhost:8080/projects/proj-176db416e9091dd9/branches/br-7f1358d3afab2d9c/databases \
+  -H "Content-Type: application/json" \
+  -d '{"database":{"name":"app_db","owner_name":"app_user"}}'
+```
+
+**响应** `201 Created`：
+
+```json
+{
+  "database": {
+    "branch_id": "br-7f1358d3afab2d9c",
+    "name": "app_db",
+    "owner_name": "app_user",
+    "created_at": "2026-11-16T03:31:00Z",
+    "updated_at": "2026-11-16T03:31:00Z"
+  },
+  "operations": [{"action": "apply_config", "status": "finished"}]
+}
+```
+
+#### `GET .../databases` / `GET .../databases/{name}` — 列表 / 单查
+
+```json
+{"databases": [{"branch_id": "br-...", "name": "app_db", "owner_name": "app_user", "created_at": "...", "updated_at": "..."}]}
+```
+
+```json
+{"database": {"branch_id": "br-...", "name": "app_db", "owner_name": "app_user", "created_at": "...", "updated_at": "..."}}
+```
+
+#### `PATCH .../databases/{name}` — 改名 / 改属主
+
+请求体两个字段均可选，至少传一个：
+
+```json
+{"database": {"name": "app_db_v2", "owner_name": "sally"}}
+```
+
+- `name` 变化 → 下发 `delta_operations: [{"action":"rename_db","name":"旧名","new_name":"新名"}]`；
+- `owner_name` 变化 → 更新 spec 中该库的 owner（compute 执行 `ALTER DATABASE ... OWNER TO`）；
+- 目标名已存在 → `409`；owner 不存在 → `400`。
+
+#### `DELETE .../databases/{name}` — 删除数据库
+
+下发 `{"action":"delete_db","name":"..."}`，compute 侧执行 `DROP DATABASE ... WITH (FORCE)`；
+成功后删除 registry 行。返回 `{"database": {...}, "operations": [...]}`。
+
+---
+
+### 目录变更语义与错误码
+
+**写入路径**（控制面不直连 SQL，统一走 ComputeSpec → compute_ctl `/configure`）：
+
+| 操作 | 顺序 |
+| --- | --- |
+| 创建 | 写 registry + 角色 Secret → `/configure`；失败删行/删 Secret 并返回 503 |
+| 删除 | 先 `/configure`（`delete_role`/`delete_db`，`IF EXISTS` 幂等）→ 再删行 + Secret |
+| 重置密码 | 备份旧 verifier → 写新 verifier → `/configure`；失败恢复旧值 |
+| 改名 | `/configure` 带 `rename_db` → 更新 registry 行 |
+
+**前置条件**：目标分支必须存在 **running 的 `read_write` endpoint**，否则目录写返回 `409`
+（read_only 副本不应用 catalog）。
+
+**分支继承**：创建分支时复制父分支的 roles/databases，并为新分支生成**独立的角色 Secret**
+（密码同值、后续可分别轮换）。升级前已存在的分支在控制面启动时由 `seedCatalogRegistry` 幂等回填。
+
+| 状态码 | 场景 |
+| --- | --- |
+| `400` | 缺失/非法标识符、`no_login=true`、owner 不存在 |
+| `403` | `protected` 角色删除或重置密码 |
+| `404` | project / branch / role / database 不存在 |
+| `409` | 重名、分支无 running read_write endpoint、角色仍拥有数据库 |
+| `501` | `reveal_password`（控制面不保存明文） |
+| `503` | `/configure` 失败或超时（可重试） |
+| `500` | 控制面数据库写入失败 |
+
+错误响应统一为 `{"error": "..."}`（部分 409 附带 `databases` 等上下文字段）。
+
 ### Compute Spec 下发（compute_ctl 拉取）
 
 #### `GET /compute/api/v2/computes/{compute_id}/spec`
@@ -765,12 +1016,17 @@ $ curl http://localhost:8080/endpoints/ep-aac4db8fe1aa217a/jwks
 不进 values、ConfigMap、日志或 Helm release。
 
 - **表结构**：`schema_version` / `projects` / `branches` / `endpoints` /
-  `endpoint_credentials` / `operations`（预留）；唯一约束均带 `WHERE deleted_at IS NULL`。
+  `endpoint_credentials` / `roles` / `databases` / `operations`（预留）；
+  唯一约束均带 `WHERE deleted_at IS NULL`。
 - **写入策略**：`StateStore` 按实体事务化 UPSERT/DELETE，失败返回可行动错误并重试；
   不写整份 JSON，也不持久化完整 ComputeSpec 与观测字段。
 - **DDL 迁移**：`embed.FS` 打包版本化 SQL，启动时用 `pg_advisory_xact_lock` 串行执行，
-  checksum 校验、只做 additive 变更。
-- **凭据**：SCRAM 验证器写入 `neon-cp-cred-<endpoint_id>` Secret，库中只存引用；
+  checksum 校验、只做 additive 变更。当前版本：`0001_init` → `0002_endpoint_type` →
+  `0003_roles_databases`（roles/databases 两张表）。
+- **分支目录**：`roles` / `databases` 是 branch 级 desired state；创建分支时复制父分支目录
+  并生成独立的角色 Secret，升级时由 `seedCatalogRegistry` 按拓扑序幂等回填。
+- **凭据**：endpoint 的 SCRAM 验证器写入 `neon-cp-cred-<endpoint_id>` Secret，
+  角色 verifier 写入 `neon-cp-role-<hash>` Secret，库中只存引用；
   `get_endpoint_access_control` 走内存缓存，避免每次鉴权访问 apiserver。
 - **跨系统一致性**：创建 project 采用 Saga 顺序（Secret → SC → PG 事务 → K8s → 201），
   任一步失败逆序补偿，禁止「外部失败仅告警后继续」。
@@ -797,14 +1053,33 @@ $ curl http://localhost:8080/endpoints/ep-aac4db8fe1aa217a/jwks
 | `GET`                     | `/projects`                                    | 列出所有 project                                          |
 | `GET`                     | `/projects/{id}`                               | 查询单个 project                                          |
 | `DELETE`                  | `/projects/{id}`                               | 删除 project（级联删除分支和端点）                        |
+| `GET`                     | `/projects/{id}/connection_uri`                | 获取连接串（role/database 必填）                          |
 | **Branch**            |                                                  |                                                           |
-| `POST`                    | `/projects/{id}/branches`                      | 创建 branch（新 timeline + 父子追踪）                     |
+| `POST`                    | `/projects/{id}/branches`                      | 创建 branch（新 timeline + 父子追踪 + 复制 catalog）      |
 | `GET`                     | `/projects/{id}/branches`                      | 列出所有真实 branch                                       |
+| `GET`                     | `/projects/{id}/branches/{bid}`                | 查询单个 branch                                           |
 | `DELETE`                  | `/projects/{id}/branches/{bid}`                | 删除分支（默认/子分支保护 + 级联清理）                    |
 | **Endpoint**          |                                                  |                                                           |
 | `POST`                    | `/projects/{id}/endpoints`                     | 创建 endpoint（动态 locate + 签发 JWT + SCRAM）           |
 | `GET`                     | `/projects/{id}/endpoints`                     | 列出 endpoint                                             |
+| `GET`                     | `/projects/{id}/endpoints/{eid}`               | 查询单个 endpoint                                         |
+| `GET`                     | `/projects/{id}/branches/{bid}/endpoints`      | 列出分支的 endpoint（主节点 + 只读副本）                  |
 | `DELETE`                  | `/projects/{id}/endpoints/{eid}`               | 删除 endpoint（含 K8s 资源清理）                          |
+| **Region**            |                                                  |                                                           |
+| `GET`                     | `/regions`                                     | 列出可用 region（自托管单 region）                        |
+| **Roles**             |                                                  |                                                           |
+| `POST`                    | `/projects/{id}/branches/{bid}/roles`          | 创建角色（一次性返回密码）                                |
+| `GET`                     | `/projects/{id}/branches/{bid}/roles`          | 列出角色（不含密码）                                      |
+| `GET`                     | `/projects/{id}/branches/{bid}/roles/{role}`   | 查询单个角色                                              |
+| `DELETE`                  | `/projects/{id}/branches/{bid}/roles/{role}`   | 删除角色（protected/拥有数据库时拒绝）                    |
+| `POST`                    | `.../roles/{role}/reset_password`              | 重置密码（一次性返回新密码）                              |
+| `GET`                     | `.../roles/{role}/reveal_password`             | 固定 501（控制面不保存明文）                              |
+| **Databases**         |                                                  |                                                           |
+| `POST`                    | `/projects/{id}/branches/{bid}/databases`      | 创建数据库（owner 必须是同分支角色）                      |
+| `GET`                     | `/projects/{id}/branches/{bid}/databases`      | 列出数据库                                                |
+| `GET`                     | `/projects/{id}/branches/{bid}/databases/{db}` | 查询单个数据库                                            |
+| `PATCH`                   | `/projects/{id}/branches/{bid}/databases/{db}` | 改名 / 改属主                                             |
+| `DELETE`                  | `/projects/{id}/branches/{bid}/databases/{db}` | 删除数据库                                                |
 | **Spec**              |                                                  |                                                           |
 | `GET`                     | `/compute/api/v2/computes/{id}/spec`           | compute_ctl 拉取 ComputeSpec                              |
 | **Notify（SC 回调）** |                                                  |                                                           |
@@ -824,6 +1099,9 @@ $ curl http://localhost:8080/endpoints/ep-aac4db8fe1aa217a/jwks
    从 Secret 恢复，**明文密码仍无法再次获取**
 4. **`/endpoints/{id}/jwks` 仍为空**：该 stub 面向 proxy 的 JWT 公钥分发（phase-2）；
    注意它与 spec 响应里的 `compute_ctl_config.jwks`（已实现，用于 compute_ctl 鉴权控制面）不是同一个东西
+5. **目录 API 与官方的已知差异**：`reveal_password` 固定返回 `501`（不保存明文）、
+   `no_login=true` 返回 `400`（compute_ctl 固定追加 `LOGIN`）、`Database.id` 省略；
+   角色/数据库写操作要求分支存在 running 的 `read_write` endpoint
 
 ## 安装
 
