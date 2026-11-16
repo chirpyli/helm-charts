@@ -42,7 +42,7 @@ $ helm upgrade neon neon-0.1.0.tgz -n neon -f my-values.yaml
 ```console
 # 1. 卸载 release（neon-control-plane 内置 pre-delete 钩子，会自动清理控制面动态创建的
 #    compute Deployment/Service/Pod（标签 app.kubernetes.io/name=neon-compute）
-#    与状态 ConfigMap neon-cp-state；使用 --no-hooks 会跳过该清理）
+#    与外部 PG 独立库及 Secret（不由 Helm 管理，卸载后一律保留）
 $ helm uninstall neon -n neon
 
 # 2. （可选）清理残留 PVC
@@ -54,8 +54,10 @@ $ kubectl delete namespace neon
 
 > ⚠️ 警告：
 >
-> - 卸载后 **PVC 及其中的 pageserver / safekeeper 数据默认保留**。若需彻底清除，务必执行上面的 PVC 删除步骤。
-> - 外部依赖（PostgreSQL、MinIO/S3、JWT 密钥 Secret）均不随 release 删除，需另行清理。
+> - 卸载后 **PVC、外部 PostgreSQL 两个独立库与所有 Secret 默认保留**。若需彻底清除，务必执行上面的 PVC 删除步骤。
+> - 外部依赖（PostgreSQL 两个独立库、MinIO/S3、JWT 密钥 Secret）均不随 release 删除，需另行清理。
+> - PostgreSQL 需同时提供 `storage_controller` 与控制面独立库 `neon_control_plane`；
+>   两者使用不同账号与 Secret，初始化见 `docs/sql/init_control_plane_db.sql`。
 
 ## 数据流（phase-1，无 proxy）
 

@@ -40,3 +40,19 @@ metadata:
 type: Opaque
 stringData:
   uri: "postgres://storage_controller:storage_controller@192.168.232.128:5432/storage_controller"
+
+---
+# 控制面业务库连接串（同一外部 PG 实例上的独立库 neon_control_plane）
+# 由集群侧预建：先按 docs/sql/init_control_plane_db.sql 创建独立库与独立账号，
+# 再创建本 Secret；chart 只引用，对应 global.controlPlane.databaseUrl.existingSecret。
+# 绝不修改 storage_controller 库（其中保存 pageserver generation numbers）。
+# 示例中账号/口令仅用于开发环境，生产必须替换为强口令并通过 Secret 注入。
+# 轮换连接串后需 kubectl rollout restart deploy/<release>-neon-control-plane。
+apiVersion: v1
+kind: Secret
+metadata:
+  name: neon-control-plane-pg
+  namespace: neon
+type: Opaque
+stringData:
+  uri: "postgres://neon_control_plane:neon_control_plane@192.168.232.128:5432/neon_control_plane"

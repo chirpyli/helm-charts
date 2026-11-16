@@ -87,7 +87,22 @@ func handleNotifyAttach(w http.ResponseWriter, r *http.Request) {
 	}
 	st.mu.Unlock()
 
-	// 5) 入队推送（异步）+ 持久化。
+	// 5) 路由指纹属于恢复字段，必须落库；pending 标记由下方统一写入。
+	type fpItem struct{ id, fp string }
+	var fps []fpItem
+	st.mu.RLock()
+	for _, id := range updated {
+		if cur := st.endpoints[id]; cur != nil {
+			fps = append(fps, fpItem{id: id, fp: cur.RouteFingerprint})
+		}
+	}
+	st.mu.RUnlock()
+	for _, it := range fps {
+		fp := it.fp
+		storeRecoveryState(it.id, RecoveryPatch{RouteFingerprint: &fp})
+	}
+
+	// 6) 入队推送（异步）+ 持久化 pending 标记。
 	//    注意：一旦对 SC 返回 2xx，SC 就标记 applied=true 不再重发，
 	//    因此这里的 pending 标记与后台 worker 的退避重试是唯一的可靠性保证。
 	markPendingReconfigures(updated)
@@ -173,7 +188,13 @@ func handleNotifySafekeepers(w http.ResponseWriter, r *http.Request) {
 	}
 	st.mu.Unlock()
 
-	// 5) 入队推送（异步）+ 持久化
+	// 5) safekeeper generation 属于恢复字段，必须落库；pending 标记由下方统一写入。
+	if req.Generation > 0 {
+		for _, id := range updated {
+			storeRecoveryState(id, RecoveryPatch{SafekeeperGeneration: ptrInt64(int64(req.Generation))})
+		}
+	}
+	// 6) 入队推送（异步）+ 持久化 pending 标记
 	markPendingReconfigures(updated)
 
 	if len(updated) == 0 {

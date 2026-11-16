@@ -90,3 +90,24 @@ Service name.
 {{- define "neon-control-plane.jwtSecretName" -}}
 {{- .Values.settings.jwtSecretName | default (dig "jwt" "existingSecret" "" (.Values.global | default dict)) | default (dig "jwt" "secretName" "" (.Values.global | default dict)) -}}
 {{- end -}}
+
+{{/*
+控制面独立库连接串 Secret 名称取值链。
+
+优先级（从高到低）：
+  1. settings.stateStore.databaseUrlSecretName —— 子 chart 独立部署时显式指定
+  2. global.controlPlane.databaseUrl.existingSecret —— umbrella 部署时的主用入口
+
+与 storage-controller 的 databaseUrl Secret 完全不同：指向不同库、不同账号。
+返回空串时由 deployment.yaml 在渲染阶段 fail，避免 Pod 启动后 CrashLoopBackOff。
+*/}}
+{{- define "neon-control-plane.databaseUrlSecretName" -}}
+{{- dig "databaseUrlSecretName" "" (.Values.settings.stateStore | default dict) | default (dig "controlPlane" "databaseUrl" "existingSecret" "" (.Values.global | default dict)) -}}
+{{- end -}}
+
+{{/*
+控制面独立库连接串 Secret 键名，默认 uri（与 CloudNativePG / docs 示例一致）。
+*/}}
+{{- define "neon-control-plane.databaseUrlSecretKey" -}}
+{{- dig "databaseUrlSecretKey" "" (.Values.settings.stateStore | default dict) | default (dig "controlPlane" "databaseUrl" "secretKey" "" (.Values.global | default dict)) | default "uri" -}}
+{{- end -}}

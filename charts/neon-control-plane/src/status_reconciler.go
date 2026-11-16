@@ -85,9 +85,17 @@ func reconcileEndpointStatuses() bool {
 			changed = true
 		}
 	}
-	// 有状态变更时触发去抖持久化（write-through ConfigMap），保证控制面重启后能恢复最新状态。
+	// 仅 status 变化批量写回本地库；其它观测字段保留在内存，由对账重建。
 	if changed {
-		triggerPersist()
+		updates := make([]StatusUpdate, 0)
+		st.mu.RLock()
+		for _, ep := range st.endpoints {
+			if ep != nil {
+				updates = append(updates, StatusUpdate{EndpointID: ep.EndpointID, Status: ep.Status})
+			}
+		}
+		st.mu.RUnlock()
+		storeObservedStatuses(updates)
 	}
 	return changed
 }

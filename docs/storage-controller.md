@@ -15,6 +15,31 @@
 存储控制器storage controller，是计算层与存储层之间的沟通桥梁。因为计算节点与存储节点分离，存储层中的safekeeper以及pageserver都支持扩缩容，当pageserver的节点发生扩容或者节点发生故障，计算层是无法直接感知到存储层的变化的，此时就需要storage controller感知存储层safekeeper以及pageserver节点发生的变化，告知计算层。
 为了计算层与存储层彻底解耦，需要storage controller去调度租户以及分片，由storage controller去决定租户分片被调度到哪个pageserver上。所以 ，在启动节点，pageserver启动时都会向storage controller进行注册，safekeeper启动时也会向safekeeper进行注册。
 
+```sql
+-- pageserver
+storage_controller=# select * from nodes;
+ node_id | scheduling_policy |                        listen_http_addr                         | listen_http_port |                         listen_pg_addr                 
+         | listen_pg_port | availability_zone_id | listen_https_port | lifecycle |                        listen_grpc_addr                         | listen_grpc_port 
+---------+-------------------+-----------------------------------------------------------------+------------------+--------------------------------------------------------
+---------+----------------+----------------------+-------------------+-----------+-----------------------------------------------------------------+------------------
+    1001 | active            | neon-pageserver-1.neon-pageserver-hl-svc.neon.svc.cluster.local |             9898 | neon-pageserver-1.neon-pageserver-hl-svc.neon.svc.clust
+er.local |          64000 | zone-b               |              9899 | active    | neon-pageserver-1.neon-pageserver-hl-svc.neon.svc.cluster.local |            51051
+    1000 | active            | neon-pageserver-0.neon-pageserver-hl-svc.neon.svc.cluster.local |             9898 | neon-pageserver-0.neon-pageserver-hl-svc.neon.svc.clust
+er.local |          64000 | zone-c               |              9899 | active    | neon-pageserver-0.neon-pageserver-hl-svc.neon.svc.cluster.local |            51051
+(2 rows)
+```
+
+```sql
+-- safekeeper
+storage_controller=# select * from safekeepers ;
+  id  | region_id | version |                              host                               | port | http_port | availability_zone_id | scheduling_policy | https_port 
+------+-----------+---------+-----------------------------------------------------------------+------+-----------+----------------------+-------------------+------------
+ 2001 | default   |       1 | neon-safekeeper-1.neon-safekeeper-hl-svc.neon.svc.cluster.local | 5454 |      7676 | zone-c               | active            |           
+ 2000 | default   |       1 | neon-safekeeper-0.neon-safekeeper-hl-svc.neon.svc.cluster.local | 5454 |      7676 | zone-b               | active            |           
+ 2002 | default   |       1 | neon-safekeeper-2.neon-safekeeper-hl-svc.neon.svc.cluster.local | 5454 |      7676 | zone-a               | active            |           
+(3 rows)
+```
+
 ## 用法
 
 比较重要的配置项：

@@ -56,12 +56,23 @@ settings:
   statusReconcileIntervalSeconds: 15
   # -- proxy 兼容接口域名（phase-2 启用 proxy 时使用）
   domain: "neon.local"
+  # -- 持久化后端配置（连接串由外部 Secret 注入环境变量，绝不写入 values）
+  stateStore:
+    # postgres（生产与集群内测试） / memory（本地调试，重启丢失）
+    backend: postgres
+    # 子 chart 独立部署时可覆盖全局 Secret 名称与键名
+    databaseUrlSecretName: ""
+    databaseUrlSecretKey: ""
+    connectTimeoutSeconds: 5
+    maxConnections: 8
 
 # ---------------- 卸载清理（pre-delete 钩子） ----------------
-# 控制面在运行期通过 K8s API 动态创建的资源（compute Deployment/Service、
-# 状态 ConfigMap neon-cp-state）不在 Helm 清单中，helm uninstall 默认不会回收。
-# 本 chart 内置一个 pre-delete 钩子 Job，卸载前自动清理这些资源，无需额外开关。
+# 控制面在运行期通过 K8s API 动态创建的 compute Deployment/Service 不在 Helm 清单中，
+# 卸载后需由钩子回收；持久化数据（外部 PG 库与 Secret）不由 Helm 管理，钩子不触碰。
 cleanup:
+  # -- 卸载时是否清理 compute Deployment / Service / 残留 Pod，默认 true。
+  # 与持久化数据保留无关：PG 库与 Secret 始终保留。
+  computeResources: true
   image:
     # -- 清理钩子使用的镜像（需包含 kubectl）。
     # 默认复用控制面镜像 neondatabase/neon：该镜像已在集群节点验证可拉取，且内置

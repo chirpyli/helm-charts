@@ -4,7 +4,7 @@
 #
 # 流水线：
 #   1) 前置校验 docker / go 是否可用
-#   2) 宿主静态编译 neon-control-plane 二进制（CGO_ENABLED=0，linux/amd64，离线无第三方依赖）
+#   2) 宿主静态编译 neon-control-plane 二进制（CGO_ENABLED=0，linux/amd64，依赖由构建机联网拉取）
 #   3) 基于现有 src/Dockerfile 构建镜像（固定打 latest）
 #   4) 打 tag 并推送到本地私有仓库 192.168.232.128:5000
 #   5) docker image prune -f 仅清理悬空镜像（<none> 中间层 / 旧构建残留）
@@ -58,11 +58,12 @@ echo "    已就绪：docker=$(command -v docker)，go=$(command -v go)"
 # 4. 静态编译 neon-control-plane
 #    - CGO_ENABLED=0：生成纯静态二进制，无需容器内的 C 库依赖
 #    - GOOS/GOARCH 固定为 linux/amd64（镜像基础为 alpine:3.20，目标运行平台）
-#    - go.mod 零第三方依赖，可完全离线编译，无需 go mod download
+#    - go.mod 已引入 pgx/v5 等第三方模块，构建机需联网执行 go mod download（不 vendor）；
+#      严格离线环境请自备内部 GOPROXY 或预置 module cache
 # ---------------------------------------------------------------------------
-echo "==> [1/4] 编译 neon-control-plane（CGO_ENABLED=0，linux/amd64，离线静态链接）"
-# 进入 src 目录执行 go build（go.mod 在 src 内），产物二进制直接写到 SRC_DIR
-( cd "$SRC_DIR" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o neon-control-plane . )
+echo "==> [1/4] 拉取依赖并编译 neon-control-plane（CGO_ENABLED=0，linux/amd64 静态链接）"
+# 进入 src 目录执行 go mod download 与 go build，产物二进制直接写到 SRC_DIR
+( cd "$SRC_DIR" && go mod download && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o neon-control-plane . )
 echo "    编译完成：${BINARY}"
 
 # ---------------------------------------------------------------------------

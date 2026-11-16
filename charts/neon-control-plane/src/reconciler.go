@@ -150,7 +150,12 @@ func reconcileWithSC() {
 
 		log.Printf("reconcile: endpoint=%s tenant=%s 存储路由已变更(fingerprint=%s)，已重建 spec 并入队推送",
 			id, tenantID, fp)
-		triggerPersist()
+		fpCopy := fp
+		pending := cur.Spec != nil
+		storeRecoveryState(id, RecoveryPatch{
+			RouteFingerprint:   &fpCopy,
+			PendingReconfigure: &pending,
+		})
 	}
 
 	signalReconfigurer()
@@ -262,14 +267,14 @@ func snapshotSpec(endpointID string) *ComputeSpec {
 	return &out
 }
 
-// setPendingReconfigure 设置（或清除）endpoint 的待推送标记并触发持久化。
+// setPendingReconfigure 设置（或清除）endpoint 的待推送标记并写回恢复字段。
 func setPendingReconfigure(endpointID string, pending bool) {
 	st.mu.Lock()
 	if ep, ok := st.endpoints[endpointID]; ok && ep != nil {
 		ep.PendingReconfigure = pending
 	}
 	st.mu.Unlock()
-	triggerPersist()
+	storeRecoveryState(endpointID, RecoveryPatch{PendingReconfigure: ptrBool(pending)})
 }
 
 // markPendingReconfigures 批量标记待推送并唤醒 worker。
@@ -285,6 +290,8 @@ func markPendingReconfigures(endpointIDs []string) {
 		}
 	}
 	st.mu.Unlock()
-	triggerPersist()
+	for _, id := range endpointIDs {
+		storeRecoveryState(id, RecoveryPatch{PendingReconfigure: ptrBool(true)})
+	}
 	signalReconfigurer()
 }

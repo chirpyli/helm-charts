@@ -10,8 +10,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -33,7 +35,7 @@ var (
 // 进程内状态（真相源）
 // =============================================================================
 
-// state 进程内真相源（phase-1 仅内存；重启由 ConfigMap + SC + K8s 真相对账恢复）。
+// state 进程内真相源（重启由外部 PG + SC + K8s 真相对账恢复）。
 // 根据 plan：
 //   - project_id → tenant_id
 //   - branch_id → (tenant_id, timeline_id)
@@ -110,7 +112,7 @@ func main() {
 	// 节点由各组件自注册（pageserver re-attach / safekeeper sk-register sidecar），控制面不注册、不等待。
 	logStorageNodes()
 
-	// 启动对账：从 ConfigMap 恢复状态 + K8s 真相对账
+	// 启动对账：从外部 PG 加载状态 + K8s 真相对账（连接/迁移失败即 fail fast）
 	reconcileOnStartup()
 
 	// 启动与 storage controller 的周期对账 + compute 重配置推送 worker。
@@ -118,8 +120,18 @@ func main() {
 	startReconciler()
 
 	// 启动 endpoint 运行时状态对账（K8s + compute_ctl /status 周期探测）。
-	// 必须先于 HTTP 服务启动：控制面重启后内存/ConfigMap 里的 status 可能已落后于 K8s 真相。
+	// 必须先于 HTTP 服务启动：控制面重启后库里的 status 可能已落后于 K8s 真相。
 	startStatusReconciler()
+
+	// 优雅退出：SIGTERM/SIGINT 时刷新并关闭持久层，避免丢失待写状态。
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-sigCh
+		log.Printf("shutdown: 收到退出信号，刷新持久化状态")
+		flushStateStore()
+		os.Exit(0)
+	}()
 
 	// 注册 HTTP 路由
 	mux := http.NewServeMux()
@@ -148,6 +160,14 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 	switch {
 	// ---- 健康检查 ----
 	case path == "healthz":
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	case path == "readyz":
+		// readiness 必须包含 PG 探活：PG 断连时摘除流量，不静默提供服务。
+		if err := getStore().Health(context.Background()); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 
@@ -300,19 +320,16 @@ func createProject(w http.ResponseWriter, r *http.Request) {
 	_, code, err = sc.do(context.Background(), http.MethodPost,
 		fmt.Sprintf("/v1/tenant/%s/timeline", tenantID), "pageserverapi",
 		map[string]interface{}{"new_timeline_id": timelineID})
-	if err != nil {
-		logWarn("createProject %s: create timeline: %v (tenant %s already created)", projectID, err, tenantID)
-		operations = append(operations, map[string]string{
-			"action": "create_timeline", "status": "error", "error": err.Error(),
-		})
-	} else if code >= 400 && code != 409 {
-		logWarn("createProject %s: create timeline -> HTTP %d", projectID, code)
-		operations = append(operations, map[string]string{
-			"action": "create_timeline", "status": "error",
-		})
-	} else {
-		operations = append(operations, map[string]string{"action": "create_timeline", "status": "finished"})
+	if err != nil || (code >= 400 && code != 409) {
+		reason := fmt.Sprintf("create timeline: %v / HTTP %d", err, code)
+		logWarn("createProject %s: %s，撤销已创建的 tenant", projectID, reason)
+		if delErr := sc.deleteTenant(context.Background(), tenantID); delErr != nil {
+			queueCleanup("tenant", tenantID, delErr.Error())
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": reason})
+		return
 	}
+	operations = append(operations, map[string]string{"action": "create_timeline", "status": "finished"})
 
 	// 5) 创建本地 Project + main Branch 记录
 	p := &Project{
@@ -341,7 +358,8 @@ func createProject(w http.ResponseWriter, r *http.Request) {
 	ep, scramPassword, err := prepareEndpointForBranch(projectID, tenantID,
 		timelineID, mainBranch.BranchID, "read_write", roleName, databaseName)
 	if err != nil {
-		logWarn("createProject %s: prepare endpoint: %v", projectID, err)
+		logWarn("createProject %s: prepare endpoint 失败，执行逆序补偿：%v", projectID, err)
+		compensateCreate(context.Background(), &ProjectBundle{Project: p, Branch: mainBranch})
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
@@ -350,39 +368,69 @@ func createProject(w http.ResponseWriter, r *http.Request) {
 	st.endpoints[ep.EndpointID] = ep
 	st.mu.Unlock()
 
-	// 7) K8s 动态拉起 compute
+	// 7) 凭据 Secret（Saga 第 2 步）：验证器写入 Secret，业务库只保存引用。
+	cred, credErr := credStore.Ensure(ep)
+	if credErr != nil {
+		logWarn("createProject %s: 创建凭据 Secret 失败，执行逆序补偿：%v", projectID, credErr)
+		compensateCreate(context.Background(), &ProjectBundle{
+			Project: p, Branch: mainBranch, Endpoint: ep,
+		})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": credErr.Error()})
+		return
+	}
+	bundle := &ProjectBundle{
+		Project: p, Branch: mainBranch, Endpoint: ep, Credential: cred,
+	}
+
+	// 8) PG 事务（Saga 第 4 步）：本地权威状态先于 K8s 副作用落地。
+	if err := storeCreateBundle(bundle); err != nil {
+		logWarn("createProject %s: 持久化失败，执行逆序补偿：%v", projectID, err)
+		compensateCreate(context.Background(), bundle)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// 9) K8s 动态拉起 compute
 	// compute 节点没有静态部署形态：只能由控制面通过 in-cluster K8s API 动态创建
 	// Deployment + Service，compute_ctl 启动后再回调本服务拉取 ComputeSpec。
 	// kc 声明在函数作用域，便于下方构造连接串时回读 NodePort。
 	kc, kcErr := newKubeClient()
 	if kcErr != nil {
-		// 不在集群内（或 ServiceAccount 不可用）：仅记录告警，保持 best-effort，
-		// 仍返回已生成的 ComputeSpec 供排障，不把 201 变成 5xx。
+		if cfg.StateStore.Backend != "memory" {
+			compensateCreate(context.Background(), bundle)
+			writeJSON(w, http.StatusInternalServerError,
+				map[string]string{"error": fmt.Sprintf("kube client 不可用: %v", kcErr)})
+			return
+		}
+		// 仅本地调试（backend=memory）允许跳过 compute 拉起。
 		logWarn("createProject %s: kube client 不可用，跳过 compute 拉起: %v", projectID, kcErr)
 	} else {
 		if err := kc.createDeployment(buildComputeDeployment(ep)); err != nil {
-			logWarn("createProject %s: create compute deployment %s: %v",
-				projectID, ep.EndpointID, err)
-		} else {
-			ep.Status = EndpointStatusProvisioning
-			log.Printf("createProject %s: compute deployment %s created",
-				projectID, ep.EndpointID)
+			logWarn("createProject %s: 创建 compute Deployment 失败，执行逆序补偿：%v", projectID, err)
+			compensateCreate(context.Background(), bundle)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
 		}
+		ep.Status = EndpointStatusProvisioning
+		log.Printf("createProject %s: compute deployment %s created", projectID, ep.EndpointID)
 		if err := kc.createService(buildComputeService(ep)); err != nil {
-			logWarn("createProject %s: create compute service %s: %v",
-				projectID, ep.EndpointID, err)
+			logWarn("createProject %s: 创建 compute Service 失败，执行逆序补偿：%v", projectID, err)
+			compensateCreate(context.Background(), bundle)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
 		}
 		// NodePort 模式额外创建只暴露 5432 的对外 Service（主 Service 恒为 ClusterIP）。
 		if needsExternalService() {
 			if err := kc.createService(buildComputeExternalService(ep)); err != nil {
-				logWarn("createProject %s: create compute external service %s: %v",
-					projectID, ep.EndpointID, err)
+				logWarn("createProject %s: 创建对外 Service 失败，执行逆序补偿：%v", projectID, err)
+				compensateCreate(context.Background(), bundle)
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
 			}
 		}
+		// 状态变化写回本地库（仅 status 列）。
+		storeObservedStatuses([]StatusUpdate{{EndpointID: ep.EndpointID, Status: ep.Status}})
 	}
-
-	// 8) 持久化
-	triggerPersist()
 
 	log.Printf("createProject: %s name=%q tenant=%s timeline=%s branch=%s endpoint=%s",
 		projectID, projectName, tenantID, timelineID, mainBranch.BranchID, ep.EndpointID)
@@ -517,7 +565,18 @@ func deleteProject(w http.ResponseWriter, r *http.Request, projectID string) {
 		}
 	}
 
-	// 5) 加写锁，从 state 中移除所有相关记录
+	// 5) 先写库：失败则保持内存不变并返回 5xx，避免「删除成功但重启复活」。
+	if err := storeDeleteProject(projectID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	for _, ep := range projectEndpoints {
+		if err := credStore.Delete(ep.EndpointID); err != nil {
+			queueCleanup("secret", ep.EndpointID, err.Error())
+		}
+	}
+
+	// 6) 本地权威删除成功后，再更新内存态
 	st.mu.Lock()
 	for _, ep := range projectEndpoints {
 		delete(st.endpoints, ep.EndpointID)
@@ -527,9 +586,6 @@ func deleteProject(w http.ResponseWriter, r *http.Request, projectID string) {
 	}
 	delete(st.projects, projectID)
 	st.mu.Unlock()
-
-	// 6) 持久化
-	triggerPersist()
 
 	log.Printf("deleteProject %s: removed 1 project, %d branches, %d endpoints, tenant_deleted=%v",
 		projectID, len(projectBranches), len(projectEndpoints), tenantDeleted)
@@ -615,10 +671,10 @@ func createBranch(w http.ResponseWriter, r *http.Request, projectID string) {
 			"new_timeline_id":      timelineID,
 			"ancestor_timeline_id": parentTimelineID,
 		})
-	if err != nil {
-		logWarn("create branch timeline: %v", err)
-	} else if code >= 400 && code != 409 {
-		logWarn("create branch timeline -> HTTP %d", code)
+	if err != nil || (code >= 400 && code != 409) {
+		reason := fmt.Sprintf("create branch timeline: %v / HTTP %d", err, code)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": reason})
+		return
 	}
 
 	// 追踪分支
@@ -636,7 +692,17 @@ func createBranch(w http.ResponseWriter, r *http.Request, projectID string) {
 	st.branches[branchID] = branch
 	st.mu.Unlock()
 
-	triggerPersist()
+	if err := storeUpsertBranch(branch); err != nil {
+		st.mu.Lock()
+		delete(st.branches, branchID)
+		st.mu.Unlock()
+		if delErr := sc.deleteTimeline(context.Background(), p.TenantID, timelineID); delErr != nil {
+			queueCleanup("timeline", timelineID, delErr.Error())
+		}
+		logWarn("createBranch %s: 持久化失败：%v", branchID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, branch)
 }
@@ -769,18 +835,24 @@ func deleteBranch(w http.ResponseWriter, r *http.Request, projectID, branchID st
 		})
 	}
 
-	// 7) 加写锁，从 state 中移除
+	// 7) 先写库：失败则保持内存不变并返回 5xx。
+	if err := storeDeleteBranch(branchID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	for _, ep := range branchEndpoints {
+		if err := credStore.Delete(ep.EndpointID); err != nil {
+			queueCleanup("secret", ep.EndpointID, err.Error())
+		}
+	}
+
+	// 8) 加写锁，从 state 中移除
 	st.mu.Lock()
-	// 移除该 branch 的所有 endpoint
 	for _, ep := range branchEndpoints {
 		delete(st.endpoints, ep.EndpointID)
 	}
-	// 移除 branch
 	delete(st.branches, branchID)
 	st.mu.Unlock()
-
-	// 8) 持久化
-	triggerPersist()
 
 	log.Printf("deleteBranch %s: removed branch '%s' (%s), %d endpoints",
 		branchID, branchCopy.Name, branchCopy.TimelineID, len(branchEndpoints))
@@ -979,34 +1051,78 @@ func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
 	st.endpoints[ep.EndpointID] = ep
 	st.mu.Unlock()
 
-	// 5) K8s 动态拉起 compute
+	// 5) 凭据 Secret + 本地库事务（外部副作用之前先落地本地权威状态）
+	// 5) 凭据 Secret + 本地库事务（外部副作用之前先落地本地权威状态）
+	cred, credErr := credStore.Ensure(ep)
+	if credErr != nil {
+		st.mu.Lock()
+		delete(st.endpoints, ep.EndpointID)
+		st.mu.Unlock()
+		logWarn("createEndpoint %s: 创建凭据 Secret 失败：%v", ep.EndpointID, credErr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": credErr.Error()})
+		return
+	}
+	if err := storeUpsertEndpoint(ep, cred); err != nil {
+		st.mu.Lock()
+		delete(st.endpoints, ep.EndpointID)
+		st.mu.Unlock()
+		if delErr := credStore.Delete(ep.EndpointID); delErr != nil {
+			queueCleanup("secret", ep.EndpointID, delErr.Error())
+		}
+		logWarn("createEndpoint %s: 持久化失败：%v", ep.EndpointID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// 外部副作用失败时撤销本端点，禁止「部分成功」。
+	rollback := func(reason string) {
+		logWarn("createEndpoint %s: %s，执行逆序补偿", ep.EndpointID, reason)
+		if err := cleanupK8sComputeResources(ep.EndpointID); err != nil {
+			queueCleanup("compute", ep.EndpointID, err.Error())
+		}
+		if err := storeDeleteEndpoint(ep.EndpointID); err != nil {
+			queueCleanup("db", ep.EndpointID, err.Error())
+		}
+		if err := credStore.Delete(ep.EndpointID); err != nil {
+			queueCleanup("secret", ep.EndpointID, err.Error())
+		}
+		st.mu.Lock()
+		delete(st.endpoints, ep.EndpointID)
+		st.mu.Unlock()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": reason})
+	}
+
+	// 6) K8s 动态拉起 compute
 	// compute 节点没有静态部署形态：只能由控制面通过 in-cluster K8s API 动态创建
 	// Deployment + Service。kc 声明在函数作用域，便于下方构造连接串时回读 NodePort。
 	kc, kcErr := newKubeClient()
 	if kcErr != nil {
-		// 不在集群内（或 ServiceAccount 不可用）：best-effort，仅记录告警，
-		// 仍返回已生成的 ComputeSpec 供排障。
+		if cfg.StateStore.Backend != "memory" {
+			rollback(fmt.Sprintf("kube client 不可用: %v", kcErr))
+			return
+		}
+		// 仅本地调试（backend=memory）允许跳过 compute 拉起。
 		logWarn("createEndpoint %s: kube client 不可用，跳过 compute 拉起: %v", ep.EndpointID, kcErr)
 	} else {
 		if err := kc.createDeployment(buildComputeDeployment(ep)); err != nil {
-			logWarn("createEndpoint %s: create compute deployment: %v", ep.EndpointID, err)
-		} else {
-			ep.Status = EndpointStatusProvisioning
-			log.Printf("createEndpoint %s: compute deployment created", ep.EndpointID)
+			rollback(fmt.Sprintf("create compute deployment: %v", err))
+			return
 		}
+		ep.Status = EndpointStatusProvisioning
+		log.Printf("createEndpoint %s: compute deployment created", ep.EndpointID)
 		if err := kc.createService(buildComputeService(ep)); err != nil {
-			logWarn("createEndpoint %s: create compute service: %v", ep.EndpointID, err)
+			rollback(fmt.Sprintf("create compute service: %v", err))
+			return
 		}
 		// NodePort 模式额外创建只暴露 5432 的对外 Service。
 		if needsExternalService() {
 			if err := kc.createService(buildComputeExternalService(ep)); err != nil {
-				logWarn("createEndpoint %s: create compute external service: %v", ep.EndpointID, err)
+				rollback(fmt.Sprintf("create compute external service: %v", err))
+				return
 			}
 		}
+		storeObservedStatuses([]StatusUpdate{{EndpointID: ep.EndpointID, Status: ep.Status}})
 	}
-
-	// 6) 持久化
-	triggerPersist()
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"endpoint": ep,
@@ -1052,13 +1168,22 @@ func deleteEndpoint(w http.ResponseWriter, r *http.Request, projectID, endpointI
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "endpoint not found in this project"})
 		return
 	}
-	delete(st.endpoints, endpointID)
 	st.mu.Unlock()
 
-	// 清理 K8s 资源（compute 只能动态拉起，其 Deployment/Service 由控制面负责回收）
-	cleanupK8sComputeResources(endpointID)
-
-	triggerPersist()
+	// 先写库：失败则保持内存不变并返回 5xx，避免「删除成功但重启复活」。
+	if err := storeDeleteEndpoint(endpointID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := credStore.Delete(endpointID); err != nil {
+		queueCleanup("secret", endpointID, err.Error())
+	}
+	if err := cleanupK8sComputeResources(endpointID); err != nil {
+		queueCleanup("compute", endpointID, err.Error())
+	}
+	st.mu.Lock()
+	delete(st.endpoints, endpointID)
+	st.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":      "deleted",
@@ -1068,30 +1193,36 @@ func deleteEndpoint(w http.ResponseWriter, r *http.Request, projectID, endpointI
 
 // cleanupK8sComputeResources 删除 endpoint 对应的 K8s Deployment 和 Service。
 // 失败不阻塞返回（best-effort）。
-func cleanupK8sComputeResources(endpointID string) {
+func cleanupK8sComputeResources(endpointID string) error {
+	var firstErr error
 	kc, err := newKubeClient()
 	if err != nil {
-		logWarn("deleteEndpoint %s: kube client: %v", endpointID, err)
-		return
+		logWarn("cleanupK8sComputeResources %s: kube client: %v", endpointID, err)
+		return err
 	}
 
 	depName := computeDeploymentName(endpointID)
 	if err := kc.deleteDeployment(depName); err != nil {
-		logWarn("deleteEndpoint %s: delete deployment: %v", endpointID, err)
+		logWarn("cleanupK8sComputeResources %s: delete deployment: %v", endpointID, err)
+		firstErr = err
 	} else {
-		log.Printf("deleteEndpoint %s: deployment %s deleted", endpointID, depName)
+		log.Printf("cleanupK8sComputeResources %s: deployment %s deleted", endpointID, depName)
 	}
 
 	svcName := computeServiceName(endpointID)
 	if err := kc.deleteService(svcName); err != nil {
-		logWarn("deleteEndpoint %s: delete service: %v", endpointID, err)
+		logWarn("cleanupK8sComputeResources %s: delete service: %v", endpointID, err)
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
 
 	// 对外 Service（NodePort）可能不存在（ClusterIP 模式下不创建），删除失败只记日志。
 	extSvcName := computeExternalServiceName(endpointID)
 	if err := kc.deleteService(extSvcName); err != nil {
-		logWarn("deleteEndpoint %s: delete external service: %v", endpointID, err)
+		logWarn("cleanupK8sComputeResources %s: delete external service: %v", endpointID, err)
 	}
+	return firstErr
 }
 
 // =============================================================================
@@ -1148,6 +1279,8 @@ func getComputeSpec(w http.ResponseWriter, r *http.Request, computeID string) {
 		ep.Spec = spec
 		// 重建后同步指纹，保证后续对账能正确判断"spec 是否已跟上 SC 真相"。
 		ep.RouteFingerprint = routeFingerprint(spec.PageserverConnectionInfo)
+		// 自愈重建后标记待推送，由后台对账统一写回恢复字段（本 GET 不写库）。
+		ep.PendingReconfigure = true
 		st.mu.Unlock()
 	}
 
@@ -1178,12 +1311,12 @@ func getEndpointAccessControl(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "endpoint not found"})
 		return
 	}
-	// role_secret 取 SCRAM 验证器。ScramVerifier 刻意不持久化（避免密钥落 ConfigMap），
-	// 因此控制面重启后内存值为空；此时回退到已持久化的 spec.cluster.roles[].encrypted_password
-	// —— 两者本就是同一个验证器，避免 proxy 拿到空密钥导致鉴权失败。
-	roleSecret := ep.ScramVerifier
-	if roleSecret == "" && ep.Spec != nil && ep.Spec.Cluster != nil && len(ep.Spec.Cluster.Roles) > 0 {
-		roleSecret = ep.Spec.Cluster.Roles[0].EncryptedPassword
+	// role_secret 从凭据缓存 / Secret 引用装配；验证器不落业务库，也不落 ConfigMap。
+	roleSecret, credErr := credStore.Get(ep)
+	if credErr != nil {
+		logWarn("getEndpointAccessControl %s: 解析凭据失败：%v", ep.EndpointID, credErr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": credErr.Error()})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"role_secret":              roleSecret,
@@ -1268,11 +1401,26 @@ func buildSpecFromEndpoint(ep *Endpoint) (*ComputeSpec, error) {
 		}
 	}
 
-	// 角色/数据库优先复用 endpoint 已持久化的 spec（含项目自定义的
-	// role_name/database_name 与正确 SCRAM verifier），避免重建时被硬编码的
-	// cloud_admin/postgres 覆盖（例如项目创建的 sally/mydb）。
-	roles := []RoleSpec{{Name: "cloud_admin", EncryptedPassword: ep.ScramVerifier}}
-	dbs := []DatabaseSpec{{Name: "postgres", Owner: "cloud_admin"}}
+	// 角色/数据库优先复用内存 spec；重启后 spec 为空时，从凭据缓存与
+	// 持久化引用字段重建，避免回退到硬编码的 cloud_admin/postgres。
+	verifier, credErr := credStore.Get(ep)
+	if credErr != nil {
+		return nil, fmt.Errorf("重建 spec 时解析 SCRAM 凭据：%w", credErr)
+	}
+	roleName := ep.RoleName
+	if roleName == "" {
+		roleName = "cloud_admin"
+	}
+	dbName := ep.DatabaseName
+	if dbName == "" {
+		dbName = "postgres"
+	}
+	owner := ep.Owner
+	if owner == "" {
+		owner = roleName
+	}
+	roles := []RoleSpec{{Name: roleName, EncryptedPassword: verifier}}
+	dbs := []DatabaseSpec{{Name: dbName, Owner: owner}}
 	if ep.Spec != nil && ep.Spec.Cluster != nil {
 		if len(ep.Spec.Cluster.Roles) > 0 {
 			roles = ep.Spec.Cluster.Roles

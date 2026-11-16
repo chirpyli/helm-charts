@@ -1,6 +1,9 @@
-# 开发用最小 PostgreSQL（供 storage-controller 作为元数据后端）
+# 开发用最小 PostgreSQL（供 storage-controller 与控制面作为元数据后端）
 # 应用：kubectl apply -f postgres-dev.yaml -n neon
 # 注意：仅用于测试/开发；生产请使用托管的 PostgreSQL 或 CNPG（需先部署 operator）。
+# 本清单的 POSTGRES_DB 只创建 storage_controller 库；控制面独立库需按
+# docs/sql/init_control_plane_db.sql 手工执行 CREATE DATABASE / CREATE ROLE / GRANT，
+# 两个库使用不同账号，避免影响 generation numbers 所在库。
 apiVersion: v1
 kind: Secret
 metadata:

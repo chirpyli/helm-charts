@@ -18,6 +18,15 @@ global:
       existingSecret: "storage-controller-pg-cluster"
       # -- Secret 中存放连接串的键名（CloudNativePG / docs 示例均用 uri）
       secretKey: "uri"
+  # -- control-plane 业务库连接串 Secret（同一外部 PG 实例上的独立库）。
+  # 与 storageController.databaseUrl 指向不同库、不同账号、不同 Secret，
+  # 避免控制面业务流量影响 storage_controller 的 generation 事务。
+  controlPlane:
+    databaseUrl:
+      # -- Secret 名称，示例见 docs/neon.yaml 的 neon-control-plane-pg
+      existingSecret: "neon-control-plane-pg"
+      # -- Secret 中存放连接串的键名
+      secretKey: "uri"
   # -- 外部对象存储（MinIO / S3）：连接坐标与凭证的唯一事实来源。
   # 与 global.jwt.existingSecret / global.storageController.databaseUrl 同一套约定：
   # chart 只"引用"、绝不持有明文，坐标不进 values、不进 ConfigMap、不进 Helm release。

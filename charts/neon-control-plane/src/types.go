@@ -52,6 +52,8 @@ type Config struct {
 	// 修正 endpoint.Status（compute 崩溃/未就绪能被正确反映，而不是永久停在 running）。
 	// 与 SC 路由对账（reconcile_interval_seconds）解耦：状态探测更轻量，可更频繁。
 	StatusReconcileIntervalSeconds int `json:"status_reconcile_interval_seconds"`
+	// StateStore 持久化后端配置（不含连接串，连接串由 Secret 注入环境变量）。
+	StateStore StateStoreConfig `json:"state_store"`
 }
 
 // NodeInfo SC `GET /control/v1/node` 返回的 pageserver 节点信息（NodeDescribeResponse 的子集）。
@@ -118,7 +120,7 @@ type Endpoint struct {
 	ComputeImage  string       `json:"compute_image"`
 	ScramVerifier string       `json:"-"` // SCRAM 验证器（不入持久化，见下方说明）
 	ScramPassword string       `json:"-"` // 明文密码（仅在创建时返回给用户，不入持久化）
-	Spec          *ComputeSpec `json:"spec"`
+	Spec          *ComputeSpec `json:"-"` // 完整 spec 不进入对外 API，避免泄漏 token 与验证器
 	Status        string       `json:"status"`
 
 	// RouteFingerprint 最近一次"已下发/待下发"的存储路由指纹。
@@ -142,6 +144,13 @@ type Endpoint struct {
 	ReadyReplicas int `json:"ready_replicas,omitempty"`
 	// LastStatusCheck 最近一次状态探测的 Unix 时间戳（秒）。
 	LastStatusCheck int64 `json:"last_status_check,omitempty"`
+
+	// 以下字段仅用于凭据重建与本地库引用，不进入对外 API 的 JSON。
+	CredentialSecretName string `json:"-"`
+	CredentialSecretKey  string `json:"-"`
+	RoleName             string `json:"-"`
+	DatabaseName         string `json:"-"`
+	Owner                string `json:"-"`
 }
 
 // =============================================================================
@@ -227,14 +236,5 @@ type NotifySafekeepersRequest struct {
 	Safekeepers []SafekeeperInfo `json:"safekeepers"`
 }
 
-// =============================================================================
-// 持久化类型
-// =============================================================================
-
-// PersistedState ConfigMap 中持久化的状态快照。
-// 根据 plan：仅存 project/branch/endpoint 别名映射，tenant↔timeline 真相由 SC 维护。
-type PersistedState struct {
-	Projects  map[string]*Project  `json:"projects"`
-	Branches  map[string]*Branch   `json:"branches"`
-	Endpoints map[string]*Endpoint `json:"endpoints"`
-}
+// 持久化状态结构已迁移到 store.go 的 StateSnapshot / ProjectBundle。
+// 旧的全量快照结构按 docs/develop.md 整体删除。

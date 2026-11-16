@@ -6,8 +6,9 @@ metadata:
     {{- include "neon-control-plane.labels" . | nindent 4 }}
 data:
   # 控制面运行配置（Go 服务以 --config 读取此 JSON）
-  # 注意：不再包含 pageservers / safekeepers 节点清单与 default_tenant_id：
-  # 节点由各组件自注册进 storage controller，控制面运行时只查询（SC 为唯一真相源）。
+  # 注意：
+  #   - 不再包含 pageservers / safekeepers 节点清单与 default_tenant_id（SC 为唯一真相源）；
+  #   - 只输出非敏感配置，数据库连接串由 Secret 注入环境变量 NEON_CP_DATABASE_URL。
   config.json: |
     {
       "storage_controller_url": "{{ .Values.settings.storageControllerUrl }}",
@@ -20,5 +21,10 @@ data:
       "compute_ctl_port": {{ .Values.settings.computeCtlPort }},
       "reconcile_interval_seconds": {{ .Values.settings.reconcileIntervalSeconds }},
       "reconfigure_timeout_seconds": {{ .Values.settings.reconfigureTimeoutSeconds }},
-      "status_reconcile_interval_seconds": {{ .Values.settings.statusReconcileIntervalSeconds }}
+      "status_reconcile_interval_seconds": {{ .Values.settings.statusReconcileIntervalSeconds }},
+      "state_store": {
+        "backend": "{{ .Values.settings.stateStore.backend }}",
+        "connect_timeout_seconds": {{ .Values.settings.stateStore.connectTimeoutSeconds }},
+        "max_connections": {{ .Values.settings.stateStore.maxConnections }}
+      }
     }

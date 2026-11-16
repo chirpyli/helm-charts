@@ -331,62 +331,10 @@ func (k *kubeClient) getServiceNodePort(name string) (int, error) {
 }
 
 // =============================================================================
-// ConfigMap 操作
+// 状态持久化已改为外部 PostgreSQL 独立库（见 store_postgres.go）。
+// 此处不再保留任何状态快照读写实现；
+// 下方 sendJSON 仍用于 compute Deployment/Service 与凭据 Secret 的 K8s API 调用。
 // =============================================================================
-
-const stateConfigMapName = "neon-cp-state"
-
-// readConfigMap 读取指定 ConfigMap 的内容。
-func (k *kubeClient) readConfigMap(name string) (map[string]string, error) {
-	path := fmt.Sprintf("/api/v1/namespaces/%s/configmaps/%s", k.namespace, name)
-	data, code, err := k.doRequest(http.MethodGet, path, nil)
-	if err != nil {
-		return nil, fmt.Errorf("read configmap %s: %w", name, err)
-	}
-	if code == 404 {
-		return nil, nil // ConfigMap 不存在，返回 nil 表示首次启动
-	}
-	if code >= 300 {
-		return nil, fmt.Errorf("read configmap %s -> HTTP %d: %s", name, code, string(data))
-	}
-	var cm struct {
-		Data map[string]string `json:"data"`
-	}
-	if err := json.Unmarshal(data, &cm); err != nil {
-		return nil, fmt.Errorf("parse configmap: %w", err)
-	}
-	return cm.Data, nil
-}
-
-// upsertConfigMap 创建或更新 ConfigMap（PUT 全量替换，相当于 apply）。
-func (k *kubeClient) upsertConfigMap(name string, cmData map[string]interface{}) error {
-	// 先 GET 判断是否存在
-	path := fmt.Sprintf("/api/v1/namespaces/%s/configmaps/%s", k.namespace, name)
-	_, code, _ := k.doRequest(http.MethodGet, path, nil)
-
-	method := http.MethodPost
-	apiPath := fmt.Sprintf("/api/v1/namespaces/%s/configmaps", k.namespace)
-	if code == 200 {
-		// 已存在 → PUT 更新
-		method = http.MethodPut
-		apiPath = path
-	}
-
-	body := map[string]interface{}{
-		"apiVersion": "v1",
-		"kind":       "ConfigMap",
-		"metadata": map[string]interface{}{
-			"name":      name,
-			"namespace": k.namespace,
-			"labels": map[string]string{
-				"app.kubernetes.io/name":    "neon-control-plane",
-				"app.kubernetes.io/part-of": "neon",
-			},
-		},
-		"data": cmData,
-	}
-	return k.sendJSON(method, apiPath, body)
-}
 
 // sendJSON 发送 JSON body 到 K8s API。
 func (k *kubeClient) sendJSON(method, path string, body interface{}) error {

@@ -1,6 +1,6 @@
 # Neondatabase Kubernetes Helm Charts
 
-[![许可证](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![许可证](<https://img.shields.io/badge/License-Apache%202.0-blue.svg>)](https://opensource.org/licenses/Apache-2.0)
 
 本项目仅供学习Neon使用。
 
@@ -185,7 +185,7 @@ helm install neon charts/neon -n neon \
 > 该入口已移除。Helm 3 对未定义的 values 键只告警不报错，因此旧命令会**静默失效**并被上面的渲染期校验拦下，
 > 请改用 Secret 引用方式。
 
-#### 3. 从旧版本升级（重要）
+#### 3. 从旧版本升级
 
 旧版本由 chart 创建 `neon-jwt` Secret；本次起 chart 不再管理它，`helm upgrade` 会将其删除。
 **升级前务必先备份并重建该 Secret**：
@@ -219,6 +219,252 @@ kubectl rollout restart sts,deploy -n neon
 kubectl port-forward -n neon svc/neon-control-plane-svc 8080:8080
 ```
 
+#### 示例
+
+```sh
+# 创建Project
+postgres@slpc:~$ curl -X POST http://localhost:8080/projects \
+  -H "Content-Type: application/json" \
+  -d '{"project":{"name":"myproject","branch":{"name":"main","role_name":"sally","database_name":"mydb"}}}' | jq .
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   774  100   674  100   100    152     22  0:00:04  0:00:04 --:--:--   159
+{
+  "connection_uris": [
+    {
+      "connection_parameters": "{\"database\":\"mydb\",\"role\":\"sally\"}",
+      "connection_uri": "postgresql://sally@192.168.232.128:30551/mydb"    # 连接字符串，拼接密码后可直连
+    }
+  ],
+  "databases": [
+    {
+      "database_name": "mydb",   # 该分支上创建的数据库及属主
+      "owner_name": "sally"
+    }
+  ],
+  "default_branch": {
+    "branch_id": "br-9dded7d644b4b07d",
+    "name": "main",    # 自动创建的默认分支
+    "timeline_id": "c9861e81828e9fe4f477b1d35e7c14b0"
+  },
+  "operations": [   # 创建过程
+    {
+      "action": "create_tenant",
+      "status": "finished"
+    },
+    {
+      "action": "create_timeline",
+      "status": "finished"
+    }
+  ],
+  "project": {
+    "project_id": "proj-6bfbbd0c5edcd85d",
+    "tenant_id": "03c7583d70ca80a5c25b354f0bb92d11",
+    "name": "myproject",    # 创建的项目名
+    "created_at": "2026-11-16T03:02:34Z"
+  },
+  "roles": [
+    {
+      "password": "a909e2a33b7e706b7bde6f0a94ed44a2",
+      "role_name": "sally"   # 该分支上创建的用户及密码
+    }
+  ]
+}
+```
+
+查看neon_control_plane库：
+
+```sql
+neon_control_plane=# select * from projects;
+      project_id       |            tenant_id             |   name    |       created_at       |          updated_at           | deleted_at 
+-----------------------+----------------------------------+-----------+------------------------+-------------------------------+------------
+ proj-6bfbbd0c5edcd85d | 03c7583d70ca80a5c25b354f0bb92d11 | myproject | 2026-11-16 11:02:34+08 | 2026-11-16 11:02:34.222396+08 | 
+(1 row)
+neon_control_plane=# select * from branches ;
+      branch_id      |      project_id       |            tenant_id             |           timeline_id            | name | parent_id | is_default |          created_at   
+        |          updated_at           | deleted_at 
+---------------------+-----------------------+----------------------------------+----------------------------------+------+-----------+------------+-----------------------
+--------+-------------------------------+------------
+ br-9dded7d644b4b07d | proj-6bfbbd0c5edcd85d | 03c7583d70ca80a5c25b354f0bb92d11 | c9861e81828e9fe4f477b1d35e7c14b0 | main |           | t          | 2026-11-16 11:02:34.22
+2396+08 | 2026-11-16 11:02:34.222396+08 | 
+(1 row)
+neon_control_plane=# select * from endpoints ;
+     endpoint_id     |      project_id       |      branch_id      |            tenant_id             |           timeline_id            |                       compute_im
+age                       | status  |                        route_fingerprint                         | safekeeper_generation | pending_reconfigure |          created_at 
+          |          updated_at           | deleted_at 
+---------------------+-----------------------+---------------------+----------------------------------+----------------------------------+---------------------------------
+--------------------------+---------+------------------------------------------------------------------+-----------------------+---------------------+---------------------
+----------+-------------------------------+------------
+ ep-494cbecf0886e027 | proj-6bfbbd0c5edcd85d | br-9dded7d644b4b07d | 03c7583d70ca80a5c25b354f0bb92d11 | c9861e81828e9fe4f477b1d35e7c14b0 | 192.168.232.128:5000/neondatabas
+e/compute-node-v17:latest | running | 7345f70d35db321dc829fcbecb94367104a0ba6e416a0181d90d8f542f962917 |                     0 | f                   | 2026-11-16 11:02:34.
+222396+08 | 2026-11-16 11:10:45.330713+08 | 
+(1 row)
+```
+
+查看minio对象存储：
+
+```sh
+postgres@slpc:~/miniodata/neondata/pageserver/tenants$ ls
+03c7583d70ca80a5c25b354f0bb92d11  03c7583d70ca80a5c25b354f0bb92d11-0001
+postgres@slpc:~/miniodata/neondata/pageserver/tenants$ tree .
+.
+├── 03c7583d70ca80a5c25b354f0bb92d11
+│   └── timelines
+│       └── c9861e81828e9fe4f477b1d35e7c14b0
+│           └── initdb.tar.zst
+│               ├── 39dcf0a4-5309-4a90-bbc6-bf34c90f62fb
+│               │   └── part.1
+│               └── xl.meta
+└── 03c7583d70ca80a5c25b354f0bb92d11-0001
+    ├── tenant-manifest-00000001.json
+    │   └── xl.meta
+    └── timelines
+        └── c9861e81828e9fe4f477b1d35e7c14b0
+            ├── 000000000000000000000000000000000000-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF__00000000014E8F20-00000000014E8F99-00000001
+            │   ├── 72d438e7-0ab2-4b5d-ab07-fb7c2bde1e9c
+            │   │   └── part.1
+            │   └── xl.meta
+            └── index_part.json-00000001
+                └── xl.meta
+
+13 directories, 6 files
+```
+
+创建分支：
+
+```sh
+# 查看分支
+postgres@slpc:~$ curl http://localhost:8080/projects/proj-6bfbbd0c5edcd85d/branches | jq .
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   200  100   200    0     0  18876      0 --:--:-- --:--:-- --:--:-- 20000
+[
+  {
+    "branch_id": "br-9dded7d644b4b07d",
+    "project_id": "proj-6bfbbd0c5edcd85d",
+    "tenant_id": "03c7583d70ca80a5c25b354f0bb92d11",
+    "timeline_id": "c9861e81828e9fe4f477b1d35e7c14b0",
+    "name": "main",
+    "default": true
+  }
+]
+# 创建子分支
+postgres@slpc:~$ curl -X POST http://localhost:8080/projects/proj-6bfbbd0c5edcd85d/branches \
+  -d '{"name":"dev", "parent_branch_id":"br-9dded7d644b4b07d"}' | jq .
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   288  100   232  100    56   4652   1122 --:--:-- --:--:-- --:--:--  5877
+{
+  "branch_id": "br-d4dbc56b276d495a",
+  "project_id": "proj-6bfbbd0c5edcd85d",
+  "tenant_id": "03c7583d70ca80a5c25b354f0bb92d11",
+  "timeline_id": "eb472eec69dc52906b6b762952f2cd88",
+  "name": "dev",
+  "parent_id": "br-9dded7d644b4b07d",
+  "default": false
+}
+```
+
+查看neon_control_plane库：
+
+```sql
+neon_control_plane=# select * from branches ;
+      branch_id      |      project_id       |            tenant_id             |           timeline_id            | name |      parent_id      | is_default |          cre
+ated_at           |          updated_at           | deleted_at 
+---------------------+-----------------------+----------------------------------+----------------------------------+------+---------------------+------------+-------------
+------------------+-------------------------------+------------
+ br-9dded7d644b4b07d | proj-6bfbbd0c5edcd85d | 03c7583d70ca80a5c25b354f0bb92d11 | c9861e81828e9fe4f477b1d35e7c14b0 | main |                     | t          | 2026-11-16 1
+1:02:34.222396+08 | 2026-11-16 11:02:34.222396+08 | 
+ br-d4dbc56b276d495a | proj-6bfbbd0c5edcd85d | 03c7583d70ca80a5c25b354f0bb92d11 | eb472eec69dc52906b6b762952f2cd88 | dev  | br-9dded7d644b4b07d | f          | 2026-11-16 1
+1:34:46.244089+08 | 2026-11-16 11:34:46.244089+08 | 
+(2 rows)
+```
+
+查看minio对象存储：
+
+```sh
+postgres@slpc:~/miniodata/neondata/pageserver/tenants$ ls
+03c7583d70ca80a5c25b354f0bb92d11  03c7583d70ca80a5c25b354f0bb92d11-0001
+postgres@slpc:~/miniodata/neondata/pageserver/tenants$ cd 03c7583d70ca80a5c25b354f0bb92d11-0001/
+postgres@slpc:~/miniodata/neondata/pageserver/tenants/03c7583d70ca80a5c25b354f0bb92d11-0001$ ls
+tenant-manifest-00000001.json  timelines
+postgres@slpc:~/miniodata/neondata/pageserver/tenants/03c7583d70ca80a5c25b354f0bb92d11-0001$ cd timelines/
+postgres@slpc:~/miniodata/neondata/pageserver/tenants/03c7583d70ca80a5c25b354f0bb92d11-0001/timelines$ ls
+c9861e81828e9fe4f477b1d35e7c14b0  eb472eec69dc52906b6b762952f2cd88
+postgres@slpc:~/miniodata/neondata/pageserver/tenants/03c7583d70ca80a5c25b354f0bb92d11-0001/timelines$ tree .
+.
+├── c9861e81828e9fe4f477b1d35e7c14b0
+│   ├── 000000000000000000000000000000000000-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF__00000000014E8F20-00000000014E8F99-00000001
+│   │   ├── 72d438e7-0ab2-4b5d-ab07-fb7c2bde1e9c
+│   │   │   └── part.1
+│   │   └── xl.meta
+│   ├── 000000000000000000000000000000000000-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF__00000000014E8F99-00000000020A81E9-00000001
+│   │   ├── c4eea5d9-9a4e-42db-b375-e346851185c4
+│   │   │   └── part.1
+│   │   └── xl.meta
+│   └── index_part.json-00000001
+│       └── xl.meta
+└── eb472eec69dc52906b6b762952f2cd88
+    └── index_part.json-00000001
+        └── xl.meta
+
+9 directories, 6 files
+```
+
+创建只读节点：
+```sh
+postgres@slpc:~$ curl -X POST http://localhost:8080/projects/proj-6bfbbd0c5edcd85d/endpoints \
+  -d '{"branch_id":"br-9dded7d644b4b07d","type":"read_only"}' | jq .
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   578  100   524  100    54   5068    522 --:--:-- --:--:-- --:--:--  5611
+{
+  "connection_uri": "postgresql://cloud_admin@192.168.232.128:31266/neondb",
+  "endpoint": {
+    "endpoint_id": "ep-344d132557631bc7",
+    "project_id": "proj-6bfbbd0c5edcd85d",
+    "tenant_id": "03c7583d70ca80a5c25b354f0bb92d11",
+    "timeline_id": "c9861e81828e9fe4f477b1d35e7c14b0",
+    "branch_id": "br-9dded7d644b4b07d",
+    "compute_image": "192.168.232.128:5000/neondatabase/compute-node-v17:latest",
+    "status": "provisioning",
+    "route_fingerprint": "7345f70d35db321dc829fcbecb94367104a0ba6e416a0181d90d8f542f962917"
+  },
+  "password": "93d900319c8c72fa7b8ce135308b2879"
+}
+
+```
+查看只读节点配置：
+```sh
+postgres@neon-compute-ep-344d132557631bc7-5968999664-x82zz:~/data$ cat postgresql.conf 
+# Neon storage settings
+
+# from compute spec's pageserver_connection_info.stripe_size field
+neon.stripe_size=1024
+# derived from compute spec's pageserver_connection_info field
+neon.pageserver_connstring='postgresql://neon-pageserver-1.neon-pageserver-hl-svc.neon.svc.cluster.local:64000'
+neon.safekeepers='neon-safekeeper-0.neon-safekeeper-hl-svc.neon.svc.cluster.local:5454,neon-safekeeper-1.neon-safekeeper-hl-svc.neon.svc.cluster.local:5454,neon-safekeeper-2.neon-safekeeper-hl-svc.neon.svc.cluster.local:5454'
+neon.tenant_id='03c7583d70ca80a5c25b354f0bb92d11'
+neon.timeline_id='c9861e81828e9fe4f477b1d35e7c14b0'
+neon.project_id='proj-6bfbbd0c5edcd85d'
+neon.branch_id='br-9dded7d644b4b07d'
+neon.endpoint_id='ep-344d132557631bc7'
+lc_messages='C.UTF-8'
+lc_monetary='C.UTF-8'
+lc_time='C.UTF-8'
+lc_numeric='C.UTF-8'
+neon.compute_mode=replica
+hot_standby=on
+neon.privileged_role_name='neon_superuser'
+# Managed by compute_ctl: begin
+shared_preload_libraries = 'neon'
+listen_addresses = '*'
+# Managed by compute_ctl: end
+neon.extension_server_port=3081
+neon.disable_logical_replication_subscribers=false
+include_if_exists = 'compute_ctl_temp_override.conf'
+```
+
 #### upgrade
 
 使用 `--reuse-values` 可在不提供完整 values 文件时，仅覆盖个别字段：
@@ -237,14 +483,12 @@ helm list -A
 helm uninstall neon -n neon
 ```
 
-
-
-
 ## 许可证
 
 <!-- 保留指向仓库文件的完整 URL 链接，因为本 README 会从 main 分支同步到 gh-pages 分支。 -->
+
 [Apache 2.0 许可证](https://github.com/neondatabase/helm-charts/blob/main/LICENSE)。
 
 ## Helm 图表构建状态
 
-![发布图表](https://github.com/neondatabase/helm-charts/workflows/Release%20Charts/badge.svg?branch=main) [![检查并测试图表](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml/badge.svg)](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml)
+![发布图表](<https://github.com/neondatabase/helm-charts/workflows/Release%20Charts/badge.svg?branch=main>) [![检查并测试图表](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml/badge.svg)](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml)

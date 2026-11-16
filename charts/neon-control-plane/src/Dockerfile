@@ -2,8 +2,8 @@
 # 进入容器（docker exec -it <容器> sh）排查问题，也可按需 apk add 安装
 # curl、net-tools 等工具；同时便于安装系统 CA 证书以支持访问集群外 HTTPS 服务。
 # 二进制为 CGO_ENABLED=0 静态链接，可直接运行，无需额外 C 库依赖。
-#   1) cd charts/neon-control-plane/src && go build -o neon-control-plane .
-#      （go.mod 无第三方依赖，可完全离线编译）
+#   1) cd charts/neon-control-plane/src && go mod download && go build -o neon-control-plane .
+#      （依赖由构建机联网拉取后静态编译，不 vendor；详见 build.sh）
 #   2) docker build -t neon-control-plane:latest charts/neon-control-plane/src/
 FROM alpine:3.20
 # 安装系统 CA 证书：control-plane 访问集群外 HTTPS 服务（如外部 API）时需要。

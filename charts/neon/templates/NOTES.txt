@@ -1,12 +1,16 @@
 Neon 生产级部署已就绪（umbrella: {{ .Chart.Name }} / release: {{ .Release.Name }}）。
 共享 JWT Secret：{{ dig "jwt" "existingSecret" "" .Values.global }}（由外部预建，本 chart 不创建）
 PostgreSQL 连接串 Secret：{{ dig "storageController" "databaseUrl" "existingSecret" "" .Values.global }}（键 {{ dig "storageController" "databaseUrl" "secretKey" "" .Values.global | default "uri" }}，由外部预建，本 chart 不创建）
+控制面独立库 Secret：{{ dig "controlPlane" "databaseUrl" "existingSecret" "" .Values.global }}（键 {{ dig "controlPlane" "databaseUrl" "secretKey" "" .Values.global | default "uri" }}，由外部预建，本 chart 不创建）
 
 部署前请确认以下外部依赖已就绪：
   1. 外部 PostgreSQL（storage-controller 元数据后端）—— 在命名空间内预建 Secret 提供连接串，
      默认名 storage-controller-pg-cluster、默认键 uri（示例见 docs/neon.yaml），
      再用 global.storageController.databaseUrl.existingSecret 引用它；
      chart 不接受明文连接串，未配置会在渲染阶段报错
+  1b. 同一外部 PG 实例上的 control-plane 独立库 —— 先用 docs/sql/init_control_plane_db.sql
+     创建 neon_control_plane 库与独立账号，再预建 Secret neon-control-plane-pg（键 uri），
+     由 global.controlPlane.databaseUrl.existingSecret 引用；未配置会在渲染阶段报错
   2. 外部 MinIO / S3 —— 在命名空间内创建名为 bucket-credentials 的 Secret，见 docs/neon.yaml 示例。
      它是对象存储的**唯一事实来源**：既提供凭证（AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY），
      也提供连接坐标（BUCKET_NAME / AWS_REGION / AWS_ENDPOINT_URL）。
@@ -34,9 +38,10 @@ PostgreSQL 连接串 Secret：{{ dig "storageController" "databaseUrl" "existing
   helm dependency build charts/neon
   python3 jwt.py --namespace neon --secret-name neon-jwt
   kubectl apply -f jwt-out/neon-jwt.secret.yaml
-  kubectl apply -f docs/neon.yaml            # 或仅 apply 其中的 storage-controller-pg-cluster Secret
+  kubectl apply -f docs/neon.yaml            # 或分别 apply 其中的两个 PG Secret
   helm install neon charts/neon -n neon --create-namespace \
     --set global.storageController.databaseUrl.existingSecret=storage-controller-pg-cluster \
+    --set global.controlPlane.databaseUrl.existingSecret=neon-control-plane-pg \
     --set global.jwt.existingSecret=neon-jwt
 
 从旧版本升级（重要）：

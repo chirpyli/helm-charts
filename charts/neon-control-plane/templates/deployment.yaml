@@ -3,6 +3,12 @@
 控制面是唯一需要 privateKey.pem 的组件（持有私钥用于签发 token）。
 */}}
 {{- $jwtSecret := include "neon-control-plane.jwtSecretName" . -}}
+{{- $backend := dig "backend" "postgres" (.Values.settings.stateStore | default dict) -}}
+{{- $dbSecret := include "neon-control-plane.databaseUrlSecretName" . -}}
+{{- $dbSecretKey := include "neon-control-plane.databaseUrlSecretKey" . -}}
+{{- if and (eq $backend "postgres") (not $dbSecret) -}}
+{{- fail "未配置控制面数据库连接串 Secret：请设置 global.controlPlane.databaseUrl.existingSecret 或 settings.stateStore.databaseUrlSecretName" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,7 +16,7 @@ metadata:
   labels:
     {{- include "neon-control-plane.labels" . | nindent 4 }}
 spec:
-  # 单副本 + Recreate（plan：单写者约束，ConfigMap 状态由 leader 持有）
+  # 单副本 + Recreate（阶段 1-3 单写者约束；多副本 HA 属阶段 4）
   replicas: 1
   strategy:
     type: Recreate
@@ -47,6 +53,15 @@ spec:
               value: /etc/neon/jwt/privateKey.pem
             - name: JWT_PUBLIC_KEY_PATH
               value: /etc/neon/jwt/publicKey.pem
+            # 外部 PG 独立库连接串：只注入引用，绝不写入 values / ConfigMap / release。
+            # env 注入的 Secret 在运行期不会自动刷新，轮换后需 kubectl rollout restart。
+            {{- if eq $backend "postgres" }}
+            - name: NEON_CP_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $dbSecret | quote }}
+                  key: {{ $dbSecretKey | quote }}
+            {{- end }}
             # 供 K8s 动态拉起 compute 时定位命名空间
             - name: POD_NAMESPACE
               valueFrom:
@@ -72,7 +87,7 @@ spec:
             failureThreshold: 5
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
             initialDelaySeconds: 3
             periodSeconds: 5
