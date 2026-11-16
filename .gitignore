@@ -3,7 +3,7 @@
 .trae/
 .idea/
 .workbuddy/
-dbnodes/
+dbnotes
 
 charts/neon/charts/
 charts/neon-control-plane/src/neon-control-plane
