@@ -16,8 +16,7 @@ Neon Postgres SNI Router
 To install the chart with the release name `neon-pg-sni-router`:
 
 ```console
-$ helm repo add neondatabase https://neondatabase.github.io/helm-charts
-$ helm install neon-pg-sni-router neondatabase/neon-pg-sni-router
+$ helm install neon-pg-sni-router ./charts/neon-pg-sni-router
 ```
 
 ## Requirements

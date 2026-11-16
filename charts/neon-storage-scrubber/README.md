@@ -15,8 +15,7 @@ neon-storage-scrubber
 To install the chart with the release name `neon-storage-scrubber`:
 
 ```console
-$ helm repo add neondatabase https://neondatabase.github.io/helm-charts
-$ helm install neon-storage-scrubber neondatabase/neon-storage-scrubber
+$ helm install neon-storage-scrubber ./charts/neon-storage-scrubber
 ```
 
 ## Values

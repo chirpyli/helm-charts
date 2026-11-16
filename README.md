@@ -272,6 +272,9 @@ postgres@slpc:~$ curl -X POST http://localhost:8080/projects \
 }
 ```
 
+> `branch.role_name` 未指定时按官方语义默认 `<database_name>_owner`（如 `neondb_owner`），
+> `branch.database_name` 默认 `neondb`；密码只在创建/重置时返回一次。
+
 查看neon_control_plane库：
 
 ```sql
@@ -411,15 +414,15 @@ postgres@slpc:~/miniodata/neondata/pageserver/tenants/03c7583d70ca80a5c25b354f0b
 9 directories, 6 files
 ```
 
-创建只读节点：
+创建只读节点（请求体对齐 Neon API：嵌套在 `endpoint` 下，`type` 必填）：
 ```sh
 postgres@slpc:~$ curl -X POST http://localhost:8080/projects/proj-6bfbbd0c5edcd85d/endpoints \
-  -d '{"branch_id":"br-9dded7d644b4b07d","type":"read_only"}' | jq .
+  -H "Content-Type: application/json" \
+  -d '{"endpoint":{"branch_id":"br-9dded7d644b4b07d","type":"read_only"}}' | jq .
   % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
                                  Dload  Upload   Total   Spent    Left  Speed
 100   578  100   524  100    54   5068    522 --:--:-- --:--:-- --:--:--  5611
 {
-  "connection_uri": "postgresql://cloud_admin@192.168.232.128:31266/neondb",
   "endpoint": {
     "endpoint_id": "ep-344d132557631bc7",
     "project_id": "proj-6bfbbd0c5edcd85d",
@@ -427,13 +430,31 @@ postgres@slpc:~$ curl -X POST http://localhost:8080/projects/proj-6bfbbd0c5edcd8
     "timeline_id": "c9861e81828e9fe4f477b1d35e7c14b0",
     "branch_id": "br-9dded7d644b4b07d",
     "compute_image": "192.168.232.128:5000/neondatabase/compute-node-v17:latest",
+    "type": "read_only",          # read_write（每分支最多 1 个）| read_only（可多个）
     "status": "provisioning",
+    "current_state": "init",      # Neon EndpointState：init / active / idle
     "route_fingerprint": "7345f70d35db321dc829fcbecb94367104a0ba6e416a0181d90d8f542f962917"
   },
-  "password": "93d900319c8c72fa7b8ce135308b2879"
+  "operations": [
+    { "action": "start_compute", "status": "finished" }
+  ]
 }
 
+# 创建 endpoint 不返回 connection_uri / password（不会创建角色，也不会产生新密码）。
+# 连接串通过独立接口获取，database_name / role_name 必填（pooled=true 暂不支持，返回 400）：
+postgres@slpc:~$ curl "http://localhost:8080/projects/proj-6bfbbd0c5edcd85d/connection_uri?branch_id=br-9dded7d644b4b07d&database_name=mydb&role_name=sally" | jq .
+{
+  "uri": "postgresql://sally@192.168.232.128:31266/mydb"
+}
+
+# 密码使用项目创建时返回的 sally 密码（只读副本复用同一角色的 SCRAM 凭据）
+psql "postgresql://sally:<password>@192.168.232.128:31266/mydb"
+
 ```
+
+> 同一分支再创建 `read_write` 会返回 `409 Conflict`（一个分支最多一个主节点）；
+> `read_only` 可以创建多个。`type` 缺失或非法值返回 `400`。
+
 查看只读节点配置：
 ```sh
 postgres@neon-compute-ep-344d132557631bc7-5968999664-x82zz:~/data$ cat postgresql.conf 
@@ -485,10 +506,8 @@ helm uninstall neon -n neon
 
 ## 许可证
 
-<!-- 保留指向仓库文件的完整 URL 链接，因为本 README 会从 main 分支同步到 gh-pages 分支。 -->
-
 [Apache 2.0 许可证](https://github.com/neondatabase/helm-charts/blob/main/LICENSE)。
 
-## Helm 图表构建状态
+## Helm 图表检查状态
 
-![发布图表](<https://github.com/neondatabase/helm-charts/workflows/Release%20Charts/badge.svg?branch=main>) [![检查并测试图表](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml/badge.svg)](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml)
+[![检查并测试图表](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml/badge.svg)](https://github.com/neondatabase/helm-charts/actions/workflows/lint-test.yaml)

@@ -68,8 +68,7 @@ safekeeper **通过 CLI 参数启动**（无 TOML 配置文件），关键参数
 ## 安装
 
 ```console
-$ helm repo add neondatabase https://neondatabase.github.io/helm-charts
-$ helm install neon-safekeeper neondatabase/neon-safekeeper
+$ helm install neon-safekeeper ./charts/neon-safekeeper
 ```
 
 通过 umbrella chart 一键部署（推荐）：

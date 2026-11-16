@@ -146,6 +146,34 @@ func (c *credentialCache) Ensure(ep *Endpoint) (*EndpointCredential, error) {
 	return cred, nil
 }
 
+// AttachReference 为不新建角色的端点登记"共享凭据引用"。
+//
+// 背景（对齐 Neon 语义）：创建 compute endpoint 不会创建 role/database，
+// 因此 read_only 副本与同分支主节点使用同一个角色的 SCRAM 验证器。
+// 这里复用源端点的 Secret（名称 + 键名），既不生成新密码，也不写新的 Secret。
+func (c *credentialCache) AttachReference(ep *Endpoint, roleName, databaseName, owner, secretName, secretKey string) *EndpointCredential {
+	ep.RoleName = roleName
+	ep.DatabaseName = databaseName
+	ep.Owner = owner
+	if ep.Owner == "" {
+		ep.Owner = roleName
+	}
+	ep.CredentialSecretName = secretName
+	ep.CredentialSecretKey = secretKey
+	cred := &EndpointCredential{
+		EndpointID:   ep.EndpointID,
+		RoleName:     roleName,
+		DatabaseName: databaseName,
+		Owner:        ep.Owner,
+		SecretName:   secretName,
+		SecretKey:    secretKey,
+	}
+	c.mu.Lock()
+	c.refs[ep.EndpointID] = cred
+	c.mu.Unlock()
+	return cred
+}
+
 // Invalidate 删除端点时清理缓存条目。
 func (c *credentialCache) Invalidate(endpointID string) {
 	c.mu.Lock()

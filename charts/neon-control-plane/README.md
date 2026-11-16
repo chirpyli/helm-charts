@@ -214,7 +214,7 @@ ok
 
 - 一个 main 分支（对应独立 timeline）
 - 一个 primary read_write endpoint（含 SCRAM 密码）
-- 一个数据库（默认 `neondb`）和角色（默认 `cloud_admin`）
+- 一个数据库（默认 `neondb`）和角色（默认 `<database_name>_owner`，如 `neondb_owner`）
 
 ```console
 $ curl -X POST http://localhost:8080/projects \
@@ -228,7 +228,7 @@ $ curl -X POST http://localhost:8080/projects \
 | -------------------------------- | ------ | ---- | ----------------------------------- |
 | `project.name`                 | string | 否   | project 名称（默认自动生成）        |
 | `project.branch.name`          | string | 否   | 初始分支名称（默认`"main"`）      |
-| `project.branch.role_name`     | string | 否   | 初始角色名（默认`"cloud_admin"`） |
+| `project.branch.role_name`     | string | 否   | 初始角色名（默认 `<database_name>_owner`） |
 | `project.branch.database_name` | string | 否   | 初始数据库名（默认`"neondb"`）    |
 
 ```console
@@ -447,74 +447,83 @@ $ curl -X DELETE "http://localhost:8080/projects/proj-.../branches/br-...?hard_d
 
 #### `POST /projects/{project_id}/endpoints` — 创建 endpoint
 
-创建 endpoint 并生成完整 ComputeSpec，流程：
+创建 endpoint 并生成 ComputeSpec（对齐 Neon API 语义），流程：
 
-1. 解析请求体（`branch_id`、`type`）
-2. 定位目标 branch → timeline_id
-3. **动态定位 pageserver**：调用 SC `GET /debug/v1/tenant/{tid}/locate` 获取最新 shard 拓扑
-4. **动态获取 safekeeper**：调用 SC `GET /control/v1/safekeeper` 获取 Active 节点列表
-5. 签发 storage JWT（scope: `pageserverapi,safekeeperdata`，含 tenant_id）
-6. 生成 SCRAM-SHA-256 验证器（角色 `cloud_admin`）
-7. 组装 ComputeSpec（含 pageserver 连接信息、safekeeper 连接串、JWT、角色密码）
-8. 通过 K8s API 创建 compute Deployment + Service（compute 只能动态拉起，无静态配置路径）
+1. 解析请求体：`{"endpoint":{"branch_id":"...","type":"read_write|read_only"}}`（兼容旧扁平形态）
+2. 校验 `type` 并定位目标 branch → timeline_id
+3. **read_write 唯一性**：同一分支已存在 read_write → `409 Conflict`
+4. **动态定位 pageserver**：调用 SC `GET /debug/v1/tenant/{tid}/locate` 获取最新 shard 拓扑
+5. **动态获取 safekeeper**：调用 SC `GET /control/v1/safekeeper` 获取 Active 节点列表
+6. 签发 storage JWT（scope: `pageserverapi,safekeeperdata`，含 tenant_id）
+7. **解析分支连接身份**（role/database）：本分支已有 endpoint → 沿 `parent_id` 从父分支继承；
+   **不创建角色、不生成新密码**，只共享该角色的 SCRAM 凭据引用
+8. 组装 ComputeSpec（`cluster.roles/databases` 为空；`read_only` → `mode=Replica`）
+9. 通过 K8s API 创建 compute Deployment + Service（compute 只能动态拉起，无静态配置路径）
 
 ```console
 $ curl -X POST http://localhost:8080/projects/proj-176db416e9091dd9/endpoints \
-  -d '{"branch_id":"br-7f1358d3afab2d9c","type":"read_write"}'
+  -H "Content-Type: application/json" \
+  -d '{"endpoint":{"branch_id":"br-7f1358d3afab2d9c","type":"read_only"}}'
 ```
 
-**请求体**：
+**请求体**（官方嵌套形态）：
 
-| 字段          | 类型   | 必填 | 说明                                        |
-| ------------- | ------ | ---- | ------------------------------------------- |
-| `branch_id` | string | 否   | 目标分支 ID（空则使用默认 main 分支）       |
-| `type`      | string | 否   | `"read_write"`（默认） 或 `"read_only"` |
+| 字段                 | 类型   | 必填 | 说明                                              |
+| -------------------- | ------ | ---- | ------------------------------------------------- |
+| `endpoint.branch_id` | string | 否   | 目标分支 ID（空则使用默认 main 分支）             |
+| `endpoint.type`      | string | **是** | `"read_write"` 或 `"read_only"`；缺失/非法返回 400 |
+
+> 兼容旧扁平 `{"branch_id":"...","type":"..."}`，嵌套形态优先。
 
 **响应** `201 Created`：
 
 ```json
 {
-  "endpoint_id": "ep-aac4db8fe1aa217a",
-  "project_id": "proj-176db416e9091dd9",
-  "tenant_id": "3d1f7595b468230304e0b73cecbcb081",
-  "timeline_id": "7a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
-  "branch_id": "br-7f1358d3afab2d9c",
-  "compute_image": "neondatabase/neon:latest",
-  "spec": {
-    "format_version": 1,
+  "endpoint": {
+    "endpoint_id": "ep-aac4db8fe1aa217a",
+    "project_id": "proj-176db416e9091dd9",
     "tenant_id": "3d1f7595b468230304e0b73cecbcb081",
     "timeline_id": "7a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
-    "mode": "Primary",
-    "pageserver_connection_info": {
-      "shard_count": 0,
-      "stripe_size": 0,
-      "shards": {
-        "0": {"pageservers": [{"id": 1000, "libpq_url": "postgresql://...", "grpc_url": "http://..."}]}
-      }
-    },
-    "safekeeper_connstrings": [
-      "neon-safekeeper-0.neon-safekeeper-hl-svc:5454",
-      "neon-safekeeper-1.neon-safekeeper-hl-svc:5454",
-      "neon-safekeeper-2.neon-safekeeper-hl-svc:5454"
-    ],
-    "storage_auth_token": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...",
-    "project_id": "proj-176db416e9091dd9",
     "branch_id": "br-7f1358d3afab2d9c",
-    "endpoint_id": "ep-aac4db8fe1aa217a",
-    "cluster": {
-      "roles": [{"name": "cloud_admin", "encrypted_password": "SCRAM-SHA-256$..."}],
-      "databases": [{"name": "postgres", "owner": "cloud_admin"}],
-      "settings": {}
-    }
+    "compute_image": "neondatabase/neon:latest",
+    "type": "read_only",
+    "status": "provisioning",
+    "current_state": "init",
+    "route_fingerprint": "7345f70d35db321dc829fcbecb94367104a0ba6e416a0181d90d8f542f962917"
   },
-  "status": "provisioning",
-  "connection_uri": "postgresql://cloud_admin@neon-compute-ep-aac4db8fe1aa217a.default.svc.cluster.local:5432/postgres"
+  "operations": [
+    {"action": "start_compute", "status": "finished"}
+  ]
 }
 ```
 
-> - `mode` 根据 `type` 自动设置：`"read_write"` → `"Primary"`，`"read_only"` → `"Replica"`
-> - pageserver 和 safekeeper 信息优先从 SC 动态获取，失败时回退到 `values.yaml` 静态配置
-> - `status` 创建后为 `"provisioning"`；随后由**运行时状态对账**自动收敛：Pod 就绪且 compute_ctl `/status=running` → `"running"`，Pod/ compute 失败 → `"failed"`，无 Deployment → `"stopped"`
+> - 响应**不含** `connection_uri` / `password`：创建 endpoint 不创建角色、不产生新密码
+> - `current_state` 是 Neon `EndpointState` 的派生值：`provisioning`→`init`、`running`→`active`、`stopped`→`idle`
+> - `mode` 由 `type` 决定（`read_only` → `Replica`），spec 重建时同样保持，避免副本被提升为主节点
+> - `status` 由**运行时状态对账**收敛：Pod 就绪且 compute_ctl `/status=running` → `"running"`，失败 → `"failed"`，无 Deployment → `"stopped"`
+> - pageserver / safekeeper 地址只从 SC 动态获取，无静态清单兜底（查询失败返回 503）
+
+#### `GET /projects/{project_id}/connection_uri` — 获取连接串
+
+参数与官方一致，`database_name` / `role_name` **必填**（角色与数据库属于分支，不能由控制面猜）：
+
+| 参数            | 必填   | 说明                                  |
+| --------------- | ------ | ------------------------------------- |
+| `branch_id`     | 否     | 默认 main 分支                        |
+| `endpoint_id`   | 否     | 默认该分支的 read_write endpoint      |
+| `database_name` | **是** | 数据库名                              |
+| `role_name`     | **是** | 角色名                                |
+| `pooled`        | 否     | 本部署未启用连接池；`pooled=true` 返回 `400`，`false` 等价于不传 |
+
+错误响应为 `{"error": "..."}`（与官方 `{code, message, request_id}` 形状不同，控制面统一用简化的 error 字段）。
+
+```console
+$ curl "http://localhost:8080/projects/proj-176db416e9091dd9/connection_uri?branch_id=br-7f1358d3afab2d9c&database_name=mydb&role_name=sally"
+{"uri":"postgresql://sally@neon-compute-ep-aac4db8fe1aa217a.default.svc.cluster.local:5432/mydb"}
+```
+
+> 控制面只保存 SCRAM 验证器、不保存明文密码，因此 URI 不含密码（与官方的已知差异）；
+> 密码在项目创建或角色重置时返回一次。
 
 **动态拉起 compute**：compute 节点没有静态部署形态，创建 endpoint 时控制面必然通过 K8s API 创建 Deployment（命名格式 `neon-compute-{endpoint_id}`）和 Service（类型由 `settings.computeServiceType` 决定）。容器启动命令：
 
@@ -533,7 +542,10 @@ compute_ctl 启动后通过 `GET /compute/api/v2/computes/{compute_id}/spec` 拉
 $ curl http://localhost:8080/projects/proj-176db416e9091dd9/endpoints
 ```
 
-**响应** `200 OK`：endpoint 数组（同创建响应格式）。
+**响应** `200 OK`：endpoint 对象数组（每个元素与创建响应里的 `endpoint` 结构相同）。
+
+> 升级提示：`0002_endpoint_type.sql` 会把存量 endpoint 回填为 `read_write`。
+> 旧版本创建的 `read_only` endpoint 需要 **删除后重新创建**，才能获得正确的 `type` 与 `Replica` 模式。
 
 #### `DELETE /projects/{project_id}/endpoints/{endpoint_id}` — 删除 endpoint
 
@@ -816,8 +828,7 @@ $ curl http://localhost:8080/endpoints/ep-aac4db8fe1aa217a/jwks
 ## 安装
 
 ```console
-$ helm repo add neondatabase https://neondatabase.github.io/helm-charts
-$ helm install neon-control-plane neondatabase/neon-control-plane
+$ helm install neon-control-plane ./charts/neon-control-plane
 ```
 
 通过 umbrella chart 一键部署（推荐）：

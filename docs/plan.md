@@ -160,10 +160,10 @@ stringData:
 
 #### 用户 API（v2.json 风格，仅核心字段）
 
-- `POST /projects` → 在 SC 创建独立 tenant + 初始 timeline，自动建 `main` 分支与默认 `read_write` endpoint，并动态拉起 compute；响应含 `project`、`connection_uris`、`roles`（含明文密码）、`databases`、`default_branch`、`operations`。默认角色 `cloud_admin`、默认库 **`neondb`**（均可用请求体覆盖）。
+- `POST /projects` → 在 SC 创建独立 tenant + 初始 timeline，自动建 `main` 分支与默认 `read_write` endpoint，并动态拉起 compute；响应含 `project`、`connection_uris`、`roles`（含明文密码）、`databases`、`default_branch`、`operations`。默认角色 `<database_name>_owner`（官方语义，如 `neondb_owner`）、默认库 **`neondb`**（均可用请求体覆盖）。
 - `GET /projects`、`GET /projects/{project_id}`、`DELETE /projects/{project_id}`（级联删除 endpoint / branch / timeline / tenant 与 compute 资源）。
 - `POST /projects/{project_id}/branches`、`GET /projects/{project_id}/branches`、`DELETE /projects/{project_id}/branches/{branch_id}`（default 分支或存在子分支时返回 409）。
-- `POST /projects/{project_id}/endpoints`（body `{branch_id, type:"read_write"|"read_only"}`）→ 见下「Endpoint 创建」；`GET /projects/{project_id}/endpoints`；`DELETE /projects/{project_id}/endpoints/{endpoint_id}`。
+- `POST /projects/{project_id}/endpoints`（body `{"endpoint":{"branch_id":"...","type":"read_write"|"read_only"}}`，兼容旧扁平形态；`type` 必填；每分支仅一个 `read_write`，重复创建 409）→ 见下「Endpoint 创建」；`GET /projects/{project_id}/endpoints`；`DELETE /projects/{project_id}/endpoints/{endpoint_id}`；`GET /projects/{project_id}/connection_uri?database_name=&role_name=`（连接串，role/db 必填）。
 - `GET /compute/api/v2/computes/{compute_id}/spec` → compute_ctl 的 spec 拉取端点（与用户 API 同端口）；`GET /healthz` → 健康检查。
 - 未提供单个 branch / endpoint 的 GET；**用户 API 无鉴权、控制面无 `/metrics` 路由**（已知限制，见根目录 README）。
 
@@ -186,7 +186,11 @@ stringData:
    - `get_endpoint_access_control` 返回的 `role_secret`（proxy 用 `scram::ServerSecret::parse` 解析，二者必须逐字节一致，否则 proxy 鉴权失败）。
 
    > **字段顺序不可写错**：必须是 `<iterations>:<salt>`（冒号分隔）。早期文档写成 `salt:iters` 会让 Postgres 把整串当作明文口令重新哈希，表现为 `password authentication failed`（见 `src/spec.go` 注释）。明文密码只在创建响应中返回一次，不落 ConfigMap。
-5. **组装 ComputeSpec**：`format_version:1.0`、`tenant_id`、`timeline_id`、`mode`(Primary/Replica)、`pageserver_connection_info`、`safekeeper_connstrings`、`storage_auth_token`、`project_id`/`branch_id`/`endpoint_id`、**`suspend_timeout_seconds: 0`（必填，0 = 不自动挂起）**、`local_proxy_config:{jwks:[]}`、`cluster`（`settings` 为 `GenericOption[]`，强制含 `shared_preload_libraries=neon` 与 `listen_addresses=*`）；缺省角色 `cloud_admin`、缺省库 `neondb`。创建时记录 `route_fingerprint` 作为「spec 是否落后于 SC 真相」的基线。
+
+  > **仅 `POST /projects` 走到这一步**。`POST /endpoints` 对齐 Neon 语义：不创建 role/database、不生成新密码，
+  > 而是解析分支（或父分支）已有 endpoint 的 role/db，并复用其 SCRAM 凭据引用（`credStore.AttachReference`）；
+  > 响应也不再返回 `connection_uri`/`password`，连接串改由 `GET /projects/{id}/connection_uri` 提供。
+5. **组装 ComputeSpec**：`format_version:1.0`、`tenant_id`、`timeline_id`、`mode`(Primary/Replica，按 endpoint `type` 决定)、`pageserver_connection_info`、`safekeeper_connstrings`、`storage_auth_token`、`project_id`/`branch_id`/`endpoint_id`、**`suspend_timeout_seconds: 0`（必填，0 = 不自动挂起）**、`local_proxy_config:{jwks:[]}`、`cluster`（`settings` 为 `GenericOption[]`，强制含 `shared_preload_libraries=neon` 与 `listen_addresses=*`；`roles/databases` 仅在项目创建时下发）；默认角色 `<database_name>_owner`、默认库 `neondb`。创建时记录 `route_fingerprint` 作为「spec 是否落后于 SC 真相」的基线。
 6. **拉起 compute（唯一路径）**：用 in-cluster K8s client 创建：
 
    - Deployment + 主 Service `neon-compute-<endpoint_id>`（恒为 `ClusterIP`：5432 + compute_ctl 3080）；`computeServiceType=NodePort` 时额外创建 `neon-compute-<ep>-ext`（仅 5432），对外地址返回 `<nodePortExternalHost>:<nodePort>`。3080 是管理端口，不以 NodePort 暴露。
@@ -254,7 +258,7 @@ tenant / timeline 一律由 `POST /projects` 按需创建（每个 project 独�
 
 - **语言/镜像（已确认）**：用 **Go 1.21** 实现轻量 HTTP 服务（`net/http` + `ServeMux` 手写路由，无第三方依赖）；`src/` 下 13 个 `.go` 文件（main / notify / reconciler / status_reconciler / compute / persist / scclient / spec / types / jwks / jwt / k8s / shard_test），`Dockerfile` 为 alpine 运行时 + 预编译二进制，`build.sh` 构建并推送私有仓库；chart 仅通过 `image` 引用镜像，启动参数 `--config /etc/neon/config.json`。需访问 K8s API → `templates/serviceaccount.yaml` 创建 **ClusterRole + ClusterRoleBinding**（`deployments` / `pods` / `services` / `configmaps` 的 `create/get/list/watch/update/patch/delete`，集群范围、**非**限本 namespace；代码实际只用 create/get/list/delete）。
 - **JWT 复用**：控制面持有同一套 Ed25519 私钥（只投影 `privateKey.pem` + `publicKey.pem`），现签 `pageserverapi` / `admin` / `tenant` token 及只带 `compute_id` + `exp` 的 compute token；`validateNotifyAuth` 用同一公钥校验 SC notify 的 `controlplane`（或 `admin`）token。proxy 兼容接口当前**不校验** `Authorization`。
-- **SCRAM 角色密钥自管**：创建 endpoint 时生成 `SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>` 验证器（见上「Endpoint 创建」第 4 步），既写入 ComputeSpec 又作为 `role_secret` 返回，保证 proxy 与 compute 密码一致。角色名默认 `cloud_admin`、库默认 `neondb`。
+- **SCRAM 角色密钥自管**：仅在创建 project（首次建分支）时生成 `SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>` 验证器（见上「Endpoint 创建」第 4 步），既写入 ComputeSpec 又作为 `role_secret` 返回，保证 proxy 与 compute 密码一致。后续创建 read_only 副本复用同一角色的验证器，不生成新密码。角色名默认 `<database_name>_owner`、库默认 `neondb`。
 - **不实现完整 Console**：不做用户/组织/计费/鉴权体系；用户 API 仅保留 project/branch/endpoint 核心字段（对齐 v2.json 资源形状，只实现 create/list/get/delete）。
 - **state 持久化（in-memory + ConfigMap）**：运行时真相源为内存 `state{RWMutex,...}`，持久化层为 `ConfigMap/neon-cp-state` 的 `state.json` 快照，采用 **write-through + 1s 去抖**（`src/persist.go`）。要点：
   - **单写者约束**：ConfigMap 无事务，实际部署 `replicas: 1` + `Recreate`；**未实现 Lease 选主**，多副本并发写会互相覆盖状态（后续 HA 扩展点）。

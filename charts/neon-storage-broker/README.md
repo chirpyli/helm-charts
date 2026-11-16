@@ -15,8 +15,7 @@ Neon storage broker
 To install the chart with the release name `neon-storage-broker`:
 
 ```console
-$ helm repo add neondatabase https://neondatabase.github.io/helm-charts
-$ helm install neon-storage-broker neondatabase/neon-storage-broker
+$ helm install neon-storage-broker ./charts/neon-storage-broker
 ```
 
 ## Requirements

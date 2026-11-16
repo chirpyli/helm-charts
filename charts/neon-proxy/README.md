@@ -15,8 +15,7 @@ Neon Proxy
 To install the chart with the release name `neon-proxy`:
 
 ```console
-$ helm repo add neondatabase https://neondatabase.github.io/helm-charts
-$ helm install neon-proxy neondatabase/neon-proxy
+$ helm install neon-proxy ./charts/neon-proxy
 ```
 
 ## Requirements

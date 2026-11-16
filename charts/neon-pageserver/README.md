@@ -64,8 +64,7 @@ pageserver **仅通过 TOML 配置文件**启动（`-D workdir` 指定工作目�
 ## 安装
 
 ```console
-$ helm repo add neondatabase https://neondatabase.github.io/helm-charts
-$ helm install neon-pageserver neondatabase/neon-pageserver
+$ helm install neon-pageserver ./charts/neon-pageserver
 ```
 
 通过 umbrella chart 一键部署（推荐）：

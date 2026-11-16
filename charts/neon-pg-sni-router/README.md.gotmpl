@@ -12,8 +12,7 @@
 To install the chart with the release name `{{ template "chart.name" . }}`:
 
 ```console
-$ helm repo add neondatabase https://neondatabase.github.io/helm-charts
-$ helm install {{ template "chart.name" . }} neondatabase/{{ template "chart.name" . }}
+$ helm install {{ template "chart.name" . }} ./charts/{{ template "chart.name" . }}
 ```
 
 {{ template "chart.requirementsSection" . }}

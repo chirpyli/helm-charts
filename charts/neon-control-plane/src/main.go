@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -197,6 +198,10 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 	case len(parts) == 4 && parts[0] == "projects" && parts[2] == "endpoints" && r.Method == http.MethodDelete:
 		deleteEndpoint(w, r, parts[1], parts[3])
 
+	// ---- 连接串 API（对齐 Neon：GET /projects/{id}/connection_uri） ----
+	case len(parts) == 3 && parts[0] == "projects" && parts[2] == "connection_uri" && r.Method == http.MethodGet:
+		getConnectionURI(w, r, parts[1])
+
 	// ---- Compute Spec API ----
 	case len(parts) == 6 && parts[0] == "compute" && parts[1] == "api" && parts[2] == "v2" &&
 		parts[3] == "computes" && parts[5] == "spec" && r.Method == http.MethodGet:
@@ -286,9 +291,11 @@ func createProject(w http.ResponseWriter, r *http.Request) {
 	if databaseName == "" {
 		databaseName = "neondb"
 	}
+	// 默认角色名对齐官方语义：未指定时为 "<database_name>_owner"（如 neondb_owner），
+	// 而不是旧实现里的 cloud_admin。
 	roleName := req.Project.Branch.RoleName
 	if roleName == "" {
-		roleName = "cloud_admin"
+		roleName = databaseName + "_owner"
 	}
 
 	// 2) 生成 project_id 和独立的 tenant_id（每个 project 独立隔离）
@@ -356,7 +363,7 @@ func createProject(w http.ResponseWriter, r *http.Request) {
 	//    存储节点地址只从 SC 动态获取；若 SC 尚未完成调度或无 Active safekeeper，
 	//    这里返回 503（而不是下发一份指向不存在节点的坏 spec）。
 	ep, scramPassword, err := prepareEndpointForBranch(projectID, tenantID,
-		timelineID, mainBranch.BranchID, "read_write", roleName, databaseName)
+		timelineID, mainBranch.BranchID, EndpointTypeReadWrite, roleName, databaseName, true)
 	if err != nil {
 		logWarn("createProject %s: prepare endpoint 失败，执行逆序补偿：%v", projectID, err)
 		compensateCreate(context.Background(), &ProjectBundle{Project: p, Branch: mainBranch})
@@ -886,8 +893,12 @@ func deleteBranch(w http.ResponseWriter, r *http.Request, projectID, branchID st
 // 宁可让请求失败，也不能下发指向不存在节点的 ComputeSpec（compute 起来后连不上存储，且只有 WARN 日志，极难排查）。
 //
 // 返回的 Endpoint 和明文 SCRAM 密码由调用方负责注册到 state 和持久化。
+// applyCatalog 表示是否把 role/database 作为 catalog 初始化内容下发给 compute_ctl：
+//   - createProject 首次创建分支时为 true（需要真正创建初始角色和数据库）；
+//   - POST /endpoints 一律为 false —— 官方语义里创建 endpoint 不创建 role/database，
+//     且 read_only 副本不应用 catalog，下发这些对象只会造成"密码可用"的错觉。
 func prepareEndpointForBranch(projectID, tenantID, timelineID, branchID,
-	epType, roleName, databaseName string) (*Endpoint, string, error) {
+	epType, roleName, databaseName string, applyCatalog bool) (*Endpoint, string, error) {
 
 	epID := "ep-" + randHex(8)
 	ctx := context.Background()
@@ -912,17 +923,30 @@ func prepareEndpointForBranch(projectID, tenantID, timelineID, branchID,
 		return nil, "", fmt.Errorf("prepareEndpoint %s: sign storage token: %w", epID, err)
 	}
 
-	// 4) 生成 SCRAM 验证器，返回明文密码给调用方
-	scramPassword := randHex(16)
-	verifier, err := generateScramVerifier(scramPassword)
-	if err != nil {
-		logWarn("prepareEndpoint %s: scram generation failed: %v", epID, err)
+	// 4) 仅在初始化 catalog 时生成 SCRAM 验证器与明文密码。
+	//    创建普通 endpoint 不产生新角色，复用分支已有角色的验证器（见 AttachReference）。
+	var scramPassword, verifier string
+	if applyCatalog {
+		scramPassword = randHex(16)
+		verifier, err = generateScramVerifier(scramPassword)
+		if err != nil {
+			logWarn("prepareEndpoint %s: scram generation failed: %v", epID, err)
+		}
 	}
 
 	// 5) 组装 ComputeSpec
 	mode := "Primary"
-	if epType == "read_only" {
+	if epType == EndpointTypeReadOnly {
 		mode = "Replica"
+	}
+
+	// 只有初始化 catalog 时才下发 role/database；创建普通 endpoint 时二者为 nil，
+	// 避免重复创建角色、覆盖角色密码，以及给 read_only 副本下发无效配置。
+	var clusterRoles []RoleSpec
+	var clusterDatabases []DatabaseSpec
+	if applyCatalog {
+		clusterRoles = []RoleSpec{{Name: roleName, EncryptedPassword: verifier}}
+		clusterDatabases = []DatabaseSpec{{Name: databaseName, Owner: roleName}}
 	}
 
 	spec := &ComputeSpec{
@@ -939,8 +963,8 @@ func prepareEndpointForBranch(projectID, tenantID, timelineID, branchID,
 		SuspendTimeoutSeconds:    0, // 0 表示不自动挂起
 		LocalProxyConfig:         &LocalProxySpec{Jwks: []JwksSettings{}},
 		Cluster: &ClusterSpec{
-			Roles:     []RoleSpec{{Name: roleName, EncryptedPassword: verifier}},
-			Databases: []DatabaseSpec{{Name: databaseName, Owner: roleName}},
+			Roles:     clusterRoles,
+			Databases: clusterDatabases,
 			// 必须设置 shared_preload_libraries='neon'，否则 neon SMGR 扩展不会加载
 			// PostgreSQL 回退到标准 md.c 存储 → 找不到 pageserver 上的数据文件 → 崩溃
 			// neon config.rs 中 write_postgres_conf 会在 ComputeAudit::Disabled 时不写该设置
@@ -954,12 +978,17 @@ func prepareEndpointForBranch(projectID, tenantID, timelineID, branchID,
 	}
 
 	return &Endpoint{
-		EndpointID:    epID,
-		ProjectID:     projectID,
-		TenantID:      tenantID,
-		TimelineID:    timelineID,
-		BranchID:      branchID,
-		ComputeImage:  cfg.ComputeImage,
+		EndpointID:   epID,
+		ProjectID:    projectID,
+		TenantID:     tenantID,
+		TimelineID:   timelineID,
+		BranchID:     branchID,
+		ComputeImage: cfg.ComputeImage,
+		Type:         epType,
+		// 角色/数据库属于分支，endpoint 只记录"用哪个身份连接"，不创建身份。
+		RoleName:      roleName,
+		DatabaseName:  databaseName,
+		Owner:         roleName,
 		ScramVerifier: verifier,
 		ScramPassword: scramPassword,
 		Spec:          spec,
@@ -971,19 +1000,23 @@ func prepareEndpointForBranch(projectID, tenantID, timelineID, branchID,
 
 // createEndpoint 在指定 project 下创建 endpoint（运行中的 compute 实例）。
 //
-// 流程：
-//  1. 解析请求体（branch_id、type）
-//  2. 定位目标 branch → tenant/timeline
-//  3. 共享函数 prepareEndpointForBranch 完成所有 SC 交互和 spec 组装
-//  4. 注册 state + K8s 资源（若启用）+ 持久化
+// 对齐 Neon API 语义：
+//   - 请求体为 {"endpoint":{"branch_id":"...","type":"read_write|read_only"}}（兼容旧扁平形态）；
+//   - type 必填，非法值返回 400；
+//   - 每个 branch 最多一个 read_write，已存在则返回 409；
+//   - 创建 endpoint 不创建 role/database、不产生新密码；
+//   - 响应为 {"endpoint": {...}, "operations": [...]}，连接串通过
+//     GET /projects/{project_id}/connection_uri 获取。
 func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
-	// 1) 解析请求体
+	// 1) 解析并校验请求体（type 缺失/非法必须显式报错，不能静默按 read_write 处理）
 	var req EndpointCreateRequest
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
-	if req.Type == "" {
-		req.Type = "read_write"
+	branchIDParam, epType, err := req.normalize()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
 	}
 
 	// 2) 查找 project 与目标 branch → 获取 tenant/timeline
@@ -997,11 +1030,10 @@ func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
 
 	// 确定 target branch 的 tenant 和 timeline_id
 	var tenantID, timelineID, branchID string
-	var roleName, databaseName string
 
 	st.mu.RLock()
-	if req.BranchID != "" {
-		if b, ok := st.branches[req.BranchID]; ok && b.ProjectID == projectID {
+	if branchIDParam != "" {
+		if b, ok := st.branches[branchIDParam]; ok && b.ProjectID == projectID {
 			branchID = b.BranchID
 			tenantID = b.TenantID
 			timelineID = b.TimelineID
@@ -1018,6 +1050,13 @@ func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
 			}
 		}
 	}
+	// read_write 唯一性校验与身份解析必须在同一把读锁内完成，避免两次读之间状态变化。
+	var readWriteExists bool
+	var identity *endpointIdentity
+	if branchID != "" {
+		readWriteExists = branchHasReadWriteLocked(branchID)
+		identity = findBranchIdentityLocked(branchID)
+	}
 	st.mu.RUnlock()
 
 	if branchID == "" || tenantID == "" || timelineID == "" {
@@ -1032,17 +1071,25 @@ func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
 			tenantID, p.TenantID)
 	}
 
-	// 默认角色和数据库名
-	roleName = "cloud_admin"
-	databaseName = "neondb"
+	// 官方约束：一个分支最多一个 read_write endpoint（避免同一 timeline 出现两个主节点）。
+	if epType == EndpointTypeReadWrite && readWriteExists {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("branch %s already has a read_write endpoint", branchID),
+		})
+		return
+	}
 
-	// 3) 共享函数准备 endpoint
-	//    存储节点地址只从 SC 动态获取，失败直接 503，不再回退静态清单。
-	ep, scramPassword, err := prepareEndpointForBranch(projectID, tenantID,
-		timelineID, branchID, req.Type, roleName, databaseName)
-	if err != nil {
-		logWarn("createEndpoint: prepare endpoint: %v", err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+	// 3) 准备 endpoint（applyCatalog=false）：不创建 role/database、不生成新密码。
+	//    角色/数据库从分支已有 endpoint（或父分支）继承，作为连接身份而非新建对象。
+	var roleName, databaseName string
+	if identity != nil {
+		roleName, databaseName = identity.RoleName, identity.DatabaseName
+	}
+	ep, _, prepErr := prepareEndpointForBranch(projectID, tenantID,
+		timelineID, branchID, epType, roleName, databaseName, false)
+	if prepErr != nil {
+		logWarn("createEndpoint: prepare endpoint: %v", prepErr)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": prepErr.Error()})
 		return
 	}
 
@@ -1051,24 +1098,19 @@ func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
 	st.endpoints[ep.EndpointID] = ep
 	st.mu.Unlock()
 
-	// 5) 凭据 Secret + 本地库事务（外部副作用之前先落地本地权威状态）
-	// 5) 凭据 Secret + 本地库事务（外部副作用之前先落地本地权威状态）
-	cred, credErr := credStore.Ensure(ep)
-	if credErr != nil {
-		st.mu.Lock()
-		delete(st.endpoints, ep.EndpointID)
-		st.mu.Unlock()
-		logWarn("createEndpoint %s: 创建凭据 Secret 失败：%v", ep.EndpointID, credErr)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": credErr.Error()})
-		return
+	// 5) 共享凭据引用 + 本地库事务（外部副作用之前先落地本地权威状态）。
+	//    这里不调用 credStore.Ensure：创建 endpoint 不产生新角色/新密码，
+	//    而是复用分支上同角色的 SCRAM 验证器（Secret 名称 + 键名）。
+	var cred *EndpointCredential
+	if identity != nil && identity.SecretName != "" {
+		cred = credStore.AttachReference(ep, identity.RoleName, identity.DatabaseName,
+			identity.Owner, identity.SecretName, identity.SecretKey)
 	}
 	if err := storeUpsertEndpoint(ep, cred); err != nil {
 		st.mu.Lock()
 		delete(st.endpoints, ep.EndpointID)
 		st.mu.Unlock()
-		if delErr := credStore.Delete(ep.EndpointID); delErr != nil {
-			queueCleanup("secret", ep.EndpointID, delErr.Error())
-		}
+		credStore.Invalidate(ep.EndpointID)
 		logWarn("createEndpoint %s: 持久化失败：%v", ep.EndpointID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1083,8 +1125,13 @@ func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
 		if err := storeDeleteEndpoint(ep.EndpointID); err != nil {
 			queueCleanup("db", ep.EndpointID, err.Error())
 		}
-		if err := credStore.Delete(ep.EndpointID); err != nil {
-			queueCleanup("secret", ep.EndpointID, err.Error())
+		// 只删除本端点独占的 Secret；共享凭据属于源端点/角色，不能跟着回滚删掉。
+		if cred != nil && cred.SecretName == credentialSecretName(ep.EndpointID) {
+			if err := credStore.Delete(ep.EndpointID); err != nil {
+				queueCleanup("secret", ep.EndpointID, err.Error())
+			}
+		} else {
+			credStore.Invalidate(ep.EndpointID)
 		}
 		st.mu.Lock()
 		delete(st.endpoints, ep.EndpointID)
@@ -1124,13 +1171,203 @@ func createEndpoint(w http.ResponseWriter, r *http.Request, projectID string) {
 		storeObservedStatuses([]StatusUpdate{{EndpointID: ep.EndpointID, Status: ep.Status}})
 	}
 
+	// 7) 响应对齐官方：只有 endpoint 与 operations。
+	//    连接串（含 role/database）通过 GET /projects/{id}/connection_uri 获取；
+	//    本接口不返回明文密码，避免客户端误以为创建 endpoint 会产生新凭据。
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"endpoint": ep,
-		"connection_uri": fmt.Sprintf(
-			"postgresql://%s@%s/%s",
-			roleName, computeEndpointAddress(kc, ep.EndpointID), databaseName,
-		),
-		"password": scramPassword,
+		"operations": []map[string]string{
+			{"action": "start_compute", "status": "finished"},
+		},
+	})
+}
+
+// endpointIdentity 是分支级的连接身份：角色的 SCRAM 凭据由同分支主节点共享，
+// 创建 read_only 副本时只引用、不新建。
+type endpointIdentity struct {
+	RoleName     string
+	DatabaseName string
+	Owner        string
+	SecretName   string
+	SecretKey    string
+}
+
+// identityOf 从已有 endpoint 提取连接身份。
+func identityOf(ep *Endpoint) *endpointIdentity {
+	return &endpointIdentity{
+		RoleName:     ep.RoleName,
+		DatabaseName: ep.DatabaseName,
+		Owner:        ep.Owner,
+		SecretName:   ep.CredentialSecretName,
+		SecretKey:    ep.CredentialSecretKey,
+	}
+}
+
+// branchHasReadWriteLocked 判断分支是否已存在 read_write endpoint。
+// 调用方必须持有 st.mu 的读锁或写锁。
+func branchHasReadWriteLocked(branchID string) bool {
+	for _, ep := range st.endpoints {
+		if ep == nil || ep.BranchID != branchID {
+			continue
+		}
+		// 迁移前写入的老记录 Type 为空，按 read_write 处理。
+		if ep.Type == "" || ep.Type == EndpointTypeReadWrite {
+			return true
+		}
+	}
+	return false
+}
+
+// findBranchIdentityLocked 解析分支的连接身份：
+//  1. 优先取本分支 read_write endpoint 的 role/database（没有则退而取任一 endpoint）；
+//  2. 本分支没有任何 endpoint 时，沿 parent_id 向上查找（新分支继承父分支的 catalog）。
+//
+// 调用方必须持有 st.mu 的读锁或写锁。
+func findBranchIdentityLocked(branchID string) *endpointIdentity {
+	seen := map[string]bool{}
+	for branchID != "" && !seen[branchID] {
+		seen[branchID] = true
+
+		var fallback *Endpoint
+		for _, ep := range st.endpoints {
+			if ep == nil || ep.BranchID != branchID || ep.RoleName == "" {
+				continue
+			}
+			if ep.Type == "" || ep.Type == EndpointTypeReadWrite {
+				return identityOf(ep)
+			}
+			if fallback == nil {
+				fallback = ep
+			}
+		}
+		if fallback != nil {
+			return identityOf(fallback)
+		}
+
+		b := st.branches[branchID]
+		if b == nil {
+			return nil
+		}
+		branchID = b.ParentID
+	}
+	return nil
+}
+
+// getConnectionURI 处理 GET /projects/{project_id}/connection_uri（对齐 Neon API）。
+//
+// 参数语义与官方一致：
+//   - branch_id：目标分支，缺省为默认分支；
+//   - endpoint_id：目标 endpoint，缺省为该分支的 read_write endpoint；
+//   - database_name、role_name：必填（官方同样没有默认值）——角色与数据库属于分支，
+//     不能由控制面猜测。
+//
+// 与官方的已知差异：控制面只保存 SCRAM 验证器、不保存明文密码，
+// 因此返回的 URI 不含密码；密码仅在项目创建（或后续重置）时返回一次。
+func getConnectionURI(w http.ResponseWriter, r *http.Request, projectID string) {
+	q := r.URL.Query()
+	databaseName := q.Get("database_name")
+	roleName := q.Get("role_name")
+	if databaseName == "" || roleName == "" {
+		writeJSON(w, http.StatusBadRequest,
+			map[string]string{"error": "database_name 与 role_name 为必填参数"})
+		return
+	}
+
+	// 官方在 pooled=true 时把 host 换成 "-pooler" 变体；本部署未启用连接池，
+	// 静默返回非池化 URI 会让调用方误以为走了 pooled 连接，这里显式拒绝。
+	if pooledRaw := q.Get("pooled"); pooledRaw != "" {
+		pooled, parseErr := strconv.ParseBool(pooledRaw)
+		if parseErr != nil {
+			writeJSON(w, http.StatusBadRequest,
+				map[string]string{"error": "pooled 必须是布尔值（true/false）"})
+			return
+		}
+		if pooled {
+			writeJSON(w, http.StatusBadRequest,
+				map[string]string{"error": "当前部署未启用连接池（pooler），不支持 pooled=true"})
+			return
+		}
+	}
+
+	branchIDParam := q.Get("branch_id")
+	endpointIDParam := q.Get("endpoint_id")
+
+	st.mu.RLock()
+	_, pok := st.projects[projectID]
+	if !pok {
+		st.mu.RUnlock()
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		return
+	}
+
+	// endpoint_id 优先：给出 endpoint 时以它所属分支为准。
+	var branchID, endpointID string
+	if endpointIDParam != "" {
+		ep, ok := st.endpoints[endpointIDParam]
+		if !ok || ep.ProjectID != projectID {
+			st.mu.RUnlock()
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "endpoint not found"})
+			return
+		}
+		// 同时指定 branch_id 时必须一致，否则可能返回指向另一个分支的连接地址。
+		if branchIDParam != "" && branchIDParam != ep.BranchID {
+			st.mu.RUnlock()
+			writeJSON(w, http.StatusBadRequest,
+				map[string]string{"error": "branch_id 与 endpoint_id 不匹配"})
+			return
+		}
+		branchID, endpointID = ep.BranchID, ep.EndpointID
+	}
+	if branchID == "" {
+		branchID = branchIDParam
+		if branchID == "" {
+			for _, b := range st.branches {
+				if b.ProjectID == projectID && b.Default {
+					branchID = b.BranchID
+					break
+				}
+			}
+		} else if b, ok := st.branches[branchID]; !ok || b.ProjectID != projectID {
+			branchID = ""
+		}
+	}
+	if branchID == "" {
+		st.mu.RUnlock()
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "branch not found"})
+		return
+	}
+	if endpointID == "" {
+		// 默认选该分支的 read_write endpoint；没有则退化到任一 endpoint。
+		for _, ep := range st.endpoints {
+			if ep == nil || ep.BranchID != branchID {
+				continue
+			}
+			if ep.Type == "" || ep.Type == EndpointTypeReadWrite {
+				endpointID = ep.EndpointID
+				break
+			}
+		}
+		if endpointID == "" {
+			for _, ep := range st.endpoints {
+				if ep != nil && ep.BranchID == branchID {
+					endpointID = ep.EndpointID
+					break
+				}
+			}
+		}
+	}
+	st.mu.RUnlock()
+
+	if endpointID == "" {
+		writeJSON(w, http.StatusNotFound,
+			map[string]string{"error": "no endpoint found for this branch"})
+		return
+	}
+
+	kc, _ := newKubeClient()
+	addr := computeEndpointAddress(kc, endpointID)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"uri": fmt.Sprintf("postgresql://%s@%s/%s", roleName, addr, databaseName),
 	})
 }
 
@@ -1401,26 +1638,28 @@ func buildSpecFromEndpoint(ep *Endpoint) (*ComputeSpec, error) {
 		}
 	}
 
-	// 角色/数据库优先复用内存 spec；重启后 spec 为空时，从凭据缓存与
-	// 持久化引用字段重建，避免回退到硬编码的 cloud_admin/postgres。
-	verifier, credErr := credStore.Get(ep)
-	if credErr != nil {
-		return nil, fmt.Errorf("重建 spec 时解析 SCRAM 凭据：%w", credErr)
-	}
-	roleName := ep.RoleName
-	if roleName == "" {
-		roleName = "cloud_admin"
-	}
-	dbName := ep.DatabaseName
-	if dbName == "" {
-		dbName = "postgres"
-	}
-	owner := ep.Owner
+	// 角色/数据库属于分支：优先复用内存 spec，其次用持久化的凭据引用重建。
+	// 不再回退到硬编码的 cloud_admin/postgres —— 那会把连接身份指向不存在的角色。
+	roleName, dbName, owner := ep.RoleName, ep.DatabaseName, ep.Owner
 	if owner == "" {
 		owner = roleName
 	}
-	roles := []RoleSpec{{Name: roleName, EncryptedPassword: verifier}}
-	dbs := []DatabaseSpec{{Name: dbName, Owner: owner}}
+	var roles []RoleSpec
+	var dbs []DatabaseSpec
+	if roleName != "" && dbName != "" {
+		verifier, credErr := credStore.Get(ep)
+		if credErr != nil {
+			// 只读副本不应用 catalog，缺验证器不影响运行；主节点必须能拿到验证器。
+			if ep.Type != EndpointTypeReadOnly {
+				return nil, fmt.Errorf("重建 spec 时解析 SCRAM 凭据：%w", credErr)
+			}
+			logWarn("buildSpecFromEndpoint %s: 只读副本缺少 SCRAM 凭据，跳过 catalog: %v",
+				ep.EndpointID, credErr)
+		} else {
+			roles = []RoleSpec{{Name: roleName, EncryptedPassword: verifier}}
+			dbs = []DatabaseSpec{{Name: dbName, Owner: owner}}
+		}
+	}
 	if ep.Spec != nil && ep.Spec.Cluster != nil {
 		if len(ep.Spec.Cluster.Roles) > 0 {
 			roles = ep.Spec.Cluster.Roles
@@ -1430,11 +1669,18 @@ func buildSpecFromEndpoint(ep *Endpoint) (*ComputeSpec, error) {
 		}
 	}
 
+	// 模式必须与 endpoint 类型一致：read_only 是 hot standby，
+	// 若按 Primary 下发，compute_ctl 重配置后会尝试提升为主节点，造成同一 timeline 双写。
+	mode := "Primary"
+	if ep.Type == EndpointTypeReadOnly {
+		mode = "Replica"
+	}
+
 	return &ComputeSpec{
 		FormatVersion:            1.0,
 		TenantID:                 ep.TenantID,
 		TimelineID:               ep.TimelineID,
-		Mode:                     "Primary",
+		Mode:                     mode,
 		PageserverConnectionInfo: pageserverInfo,
 		SafekeeperConnstrings:    safekeeperConns,
 		StorageAuthToken:         tok,

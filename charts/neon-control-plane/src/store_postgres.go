@@ -117,7 +117,7 @@ func (s *postgresStateStore) Load(ctx context.Context) (*StateSnapshot, error) {
 
 	rows, err = s.pool.Query(ctx, `
 		SELECT endpoint_id, project_id, branch_id, tenant_id, timeline_id,
-		       compute_image, status, COALESCE(route_fingerprint, ''),
+		       compute_image, type, status, COALESCE(route_fingerprint, ''),
 		       safekeeper_generation, pending_reconfigure
 		FROM endpoints WHERE deleted_at IS NULL`)
 	if err != nil {
@@ -126,7 +126,7 @@ func (s *postgresStateStore) Load(ctx context.Context) (*StateSnapshot, error) {
 	for rows.Next() {
 		var ep Endpoint
 		if err := rows.Scan(&ep.EndpointID, &ep.ProjectID, &ep.BranchID, &ep.TenantID,
-			&ep.TimelineID, &ep.ComputeImage, &ep.Status, &ep.RouteFingerprint,
+			&ep.TimelineID, &ep.ComputeImage, &ep.Type, &ep.Status, &ep.RouteFingerprint,
 			&ep.SafekeeperGeneration, &ep.PendingReconfigure); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("扫描 endpoints：%w", err)
@@ -236,17 +236,22 @@ func (s *postgresStateStore) CreateProjectBundle(ctx context.Context, b *Project
 
 // upsertEndpointTx 在既有事务内写入端点与凭据引用。
 func upsertEndpointTx(ctx context.Context, tx pgx.Tx, ep *Endpoint, cred *EndpointCredential) error {
+	// 迁移前的调用方可能没有设置 Type，按 read_write 落库，避免违反 CHECK 约束。
+	epType := ep.Type
+	if epType == "" {
+		epType = EndpointTypeReadWrite
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO endpoints (endpoint_id, project_id, branch_id, tenant_id, timeline_id,
-		    compute_image, status, route_fingerprint, safekeeper_generation, pending_reconfigure)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		    compute_image, type, status, route_fingerprint, safekeeper_generation, pending_reconfigure)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (endpoint_id) DO UPDATE SET timeline_id = EXCLUDED.timeline_id,
-		    compute_image = EXCLUDED.compute_image, status = EXCLUDED.status,
-		    route_fingerprint = EXCLUDED.route_fingerprint,
+		    compute_image = EXCLUDED.compute_image, type = EXCLUDED.type,
+		    status = EXCLUDED.status, route_fingerprint = EXCLUDED.route_fingerprint,
 		    safekeeper_generation = EXCLUDED.safekeeper_generation,
 		    pending_reconfigure = EXCLUDED.pending_reconfigure, updated_at = now()`,
 		ep.EndpointID, ep.ProjectID, ep.BranchID, ep.TenantID, ep.TimelineID,
-		ep.ComputeImage, ep.Status, nullIfEmpty(ep.RouteFingerprint),
+		ep.ComputeImage, epType, ep.Status, nullIfEmpty(ep.RouteFingerprint),
 		ep.SafekeeperGeneration, ep.PendingReconfigure); err != nil {
 		return fmt.Errorf("写入 endpoints：%w", err)
 	}

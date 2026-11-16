@@ -49,8 +49,7 @@ flowchart LR
 独立部署（默认部署到当前命名空间）：
 
 ```console
-$ helm repo add neondatabase https://neondatabase.github.io/helm-charts
-$ helm install local-path-provisioner neondatabase/local-path-provisioner
+$ helm install local-path-provisioner ./charts/local-path-provisioner
 ```
 
 与上游保持一致、部署到独立命名空间 `local-path-storage`：

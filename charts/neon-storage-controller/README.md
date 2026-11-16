@@ -15,8 +15,7 @@ Neon storage controller
 To install the chart with the release name `neon-storage-controller`:
 
 ```console
-$ helm repo add neondatabase https://neondatabase.github.io/helm-charts
-$ helm install neon-storage-controller neondatabase/neon-storage-controller
+$ helm install neon-storage-controller ./charts/neon-storage-controller
 ```
 
 ## Requirements

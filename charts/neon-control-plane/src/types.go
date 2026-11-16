@@ -1,5 +1,10 @@
 package main
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // =============================================================================
 // 配置类型（由 Helm ConfigMap 渲染的 config.json 反序列化）
 // =============================================================================
@@ -110,16 +115,27 @@ const (
 	EndpointStatusUnknown      = "unknown"      // 探测异常（理论上不会出现）
 )
 
+// EndpointType 对齐 Neon API 的 EndpointType：
+//   - read_write：分支的主计算节点，每个分支最多一个；
+//   - read_only：只读副本（hot standby），每个分支可以有多个。
+const (
+	EndpointTypeReadWrite = "read_write"
+	EndpointTypeReadOnly  = "read_only"
+)
+
 // Endpoint 对应一个运行中的 compute 端点。
 type Endpoint struct {
-	EndpointID    string       `json:"endpoint_id"`
-	ProjectID     string       `json:"project_id"`
-	TenantID      string       `json:"tenant_id"`
-	TimelineID    string       `json:"timeline_id"`
-	BranchID      string       `json:"branch_id"`
-	ComputeImage  string       `json:"compute_image"`
+	EndpointID   string `json:"endpoint_id"`
+	ProjectID    string `json:"project_id"`
+	TenantID     string `json:"tenant_id"`
+	TimelineID   string `json:"timeline_id"`
+	BranchID     string `json:"branch_id"`
+	ComputeImage string `json:"compute_image"`
+	// Type 是 Neon EndpointType：read_write / read_only。
+	// 必须持久化：read_write 唯一性校验与 spec 重建都依赖它，不能从 K8s 现场推断。
+	Type          string       `json:"type"`
 	ScramVerifier string       `json:"-"` // SCRAM 验证器（不入持久化，见下方说明）
-	ScramPassword string       `json:"-"` // 明文密码（仅在创建时返回给用户，不入持久化）
+	ScramPassword string       `json:"-"` // 明文密码（仅 project 创建时返回给用户，不入持久化）
 	Spec          *ComputeSpec `json:"-"` // 完整 spec 不进入对外 API，避免泄漏 token 与验证器
 	Status        string       `json:"status"`
 
@@ -153,6 +169,36 @@ type Endpoint struct {
 	Owner                string `json:"-"`
 }
 
+// endpointCurrentState 把控制面的聚合状态映射为 Neon API 的 EndpointState（init/active/idle）。
+// 官方 endpoint 对象用 current_state 表达生命周期，控制面内部仍使用更细的 Status。
+func endpointCurrentState(status string) string {
+	switch status {
+	case EndpointStatusRunning:
+		return "active"
+	case EndpointStatusStopped:
+		return "idle"
+	case EndpointStatusProvisioning:
+		return "init"
+	default:
+		// failed/unknown 在官方语义里没有一一对应值，用 init 表示"未进入可用状态"，
+		// 具体失败原因由 status_message 暴露，避免对外出现非官方枚举值。
+		return "init"
+	}
+}
+
+// MarshalJSON 在序列化 endpoint 时附加派生的 current_state 字段，
+// 避免把派生值冗余写入数据库与内存状态。
+func (e Endpoint) MarshalJSON() ([]byte, error) {
+	type endpointAlias Endpoint
+	return json.Marshal(struct {
+		endpointAlias
+		CurrentState string `json:"current_state"`
+	}{
+		endpointAlias: endpointAlias(e),
+		CurrentState:  endpointCurrentState(e.Status),
+	})
+}
+
 // =============================================================================
 // API 请求/响应类型
 // =============================================================================
@@ -163,17 +209,48 @@ type ProjectCreateRequest struct {
 	Project struct {
 		Name   string `json:"name"` // project 名称（必填，Neon Cloud 中必填）
 		Branch struct {
-			Name         string `json:"name"`          // 初始分支名称（默认 "main"）
-			RoleName     string `json:"role_name"`     // 初始角色名（默认 "cloud_admin"）
+			Name string `json:"name"` // 初始分支名称（默认 "main"）
+			// RoleName 初始角色名，未指定时按官方语义取 "<database_name>_owner"。
+			RoleName     string `json:"role_name"`
 			DatabaseName string `json:"database_name"` // 初始数据库名（默认 "neondb"）
 		} `json:"branch"`
 	} `json:"project"`
 }
 
-// EndpointCreateRequest POST /projects/{id}/endpoints 请求体。
-type EndpointCreateRequest struct {
+// EndpointCreateSpec 对应官方 EndpointCreateRequest.endpoint 对象。
+// 注意：官方在此处**不接收** role_name / database_name —— 角色与数据库属于分支，
+// 连接身份由 GET /projects/{id}/connection_uri 显式指定。
+type EndpointCreateSpec struct {
 	BranchID string `json:"branch_id"` // 目标分支 ID
-	Type     string `json:"type"`      // "read_write" | "read_only"
+	Type     string `json:"type"`      // "read_write" | "read_only"（必填）
+}
+
+// EndpointCreateRequest POST /projects/{id}/endpoints 请求体。
+//
+// 同时支持两种形态：
+//  1. 官方嵌套形态：{"endpoint":{"branch_id":"br-...","type":"read_only"}}
+//  2. 旧扁平形态：  {"branch_id":"br-...","type":"read_only"}
+//
+// 嵌套形态优先；扁平形态仅为兼容既有调用方保留。
+type EndpointCreateRequest struct {
+	Endpoint *EndpointCreateSpec `json:"endpoint"`
+	BranchID string              `json:"branch_id"`
+	Type     string              `json:"type"`
+}
+
+// normalize 归一化两种请求形态并校验 type。
+// 之前未校验且缺省时静默按 read_write 处理——按官方格式调用会被解析成空对象，
+// 导致"想建只读副本却建出主节点"的危险行为，这里改为显式 400。
+func (r *EndpointCreateRequest) normalize() (branchID, epType string, err error) {
+	if r.Endpoint != nil {
+		branchID, epType = r.Endpoint.BranchID, r.Endpoint.Type
+	} else {
+		branchID, epType = r.BranchID, r.Type
+	}
+	if epType != EndpointTypeReadWrite && epType != EndpointTypeReadOnly {
+		return "", "", fmt.Errorf("endpoint.type 必须是 %q 或 %q", EndpointTypeReadWrite, EndpointTypeReadOnly)
+	}
+	return branchID, epType, nil
 }
 
 // BranchCreateRequest POST /projects/{id}/branches 请求体。
