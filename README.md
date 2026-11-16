@@ -18,14 +18,39 @@
 
 #### PostgreSQL数据库
 
-创建storage_controller数据库和storage_controller用户：
+Neon 需要两个**互相独立**的 PostgreSQL 库（分别属于两个组件，不要共用一个库或账号）：
+
+| 数据库 | 用途 | 连接账号 |
+| --- | --- | --- |
+| `storage_controller` | storage controller 元数据（tenant/shard/node/timeline 注册表） | `storage_controller` |
+| `neon_control_plane` | control plane 业务状态（project/branch/endpoint/凭据引用/迁移版本） | `neon_control_plane` |
+
+创建 storage_controller 数据库和用户：
 
 ```sql
 CREATE USER storage_controller WITH PASSWORD '123456';
-CREATE DATABASE storage_controller owner storage_controller;
+CREATE DATABASE storage_controller OWNER storage_controller;
 ```
 
-设置连接字符串：**不要写进 values**，请在目标命名空间创建 Secret 后由 chart 引用：
+创建 control plane 数据库和用户（表结构由服务启动时自动迁移，账号必须是库 owner）：
+
+```sql
+CREATE USER neon_control_plane WITH PASSWORD '123456';
+CREATE DATABASE neon_control_plane OWNER neon_control_plane;
+-- 建议收紧默认权限：只允许该账号连接
+REVOKE ALL ON DATABASE neon_control_plane FROM PUBLIC;
+GRANT CONNECT, TEMPORARY ON DATABASE neon_control_plane TO neon_control_plane;
+```
+
+> 账号权限说明：
+>
+> - 只需要 `CONNECT` + 在本库 `public` schema 建表/索引（owner 天然满足）；
+> - **不要**复用 `storage_controller` 账号或 `postgres` 超级用户，避免两个组件的 DDL 与故障域互相影响；
+> - 控制面启动时用 `pg_advisory_xact_lock` 串行执行内嵌迁移（见后文「neon_control_plane 库结构」）。
+
+设置连接字符串：**不要写进 values**，请在目标命名空间创建 Secret 后由 chart 引用。
+
+storage controller 的 Secret：
 
 ```yaml
 # kubectl apply -f neon-db-secret.yaml
@@ -40,7 +65,21 @@ stringData:
   uri: "postgres://storage_controller:123456@192.168.232.128:5432/storage_controller"
 ```
 
-再在 values 中只填"引用"：
+control plane 的 Secret：
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: neon-control-plane-pg
+  namespace: neon
+type: Opaque
+stringData:
+  # Deployment 会以环境变量 NEON_CP_DATABASE_URL 注入，不会出现在 ConfigMap / values / Helm release 中
+  uri: "postgres://neon_control_plane:123456@192.168.232.128:5432/neon_control_plane"
+```
+
+再在 values 中只填“引用”：
 
 ```yaml
 global:
@@ -48,13 +87,19 @@ global:
     databaseUrl:
       existingSecret: "storage-controller-pg-cluster"
       secretKey: "uri"
+  controlPlane:
+    databaseUrl:
+      existingSecret: "neon-control-plane-pg"
+      secretKey: "uri"
 ```
 
 为什么这样设计：连接串若写在 values 里，会同时落进 Git、Helm release（`helm get values` 可取回）
 和渲染后的 manifest（`helm get manifest` 里的 base64 可直接解码），且每次改密码都必须 `helm upgrade`。
-改为引用外部 Secret 后，轮换只需更新 Secret + `kubectl rollout restart deploy/<release>-storage-controller`。
+改为引用外部 Secret 后，轮换只需更新 Secret + `kubectl rollout restart deploy/<release>-storage-controller`
+（控制面的环境变量同样不会自动刷新，需要 `kubectl rollout restart deploy/neon-control-plane`）。
 
-storage-controller 启动时会自动建表/迁移。
+两个组件启动时都会自动建表/迁移；`neon-control-plane` 在 `stateStore.backend=postgres` 且未配置
+Secret 时由 Helm 渲染直接失败（`fail`），不会带着空连接串进入 CrashLoop。
 
 #### 对象存储
 
@@ -304,6 +349,9 @@ e/compute-node-v17:latest | running | 7345f70d35db321dc829fcbecb94367104a0ba6e41
 (1 row)
 ```
 
+> 上例是 0002 迁移之前的输出；现在 `endpoints` 多了 `type` 列（`read_write` / `read_only`），
+> 查端点状态建议用：`select endpoint_id, type, status from endpoints where deleted_at is null;`
+
 查看minio对象存储：
 
 ```sh
@@ -503,6 +551,8 @@ helm list -A
 
 helm uninstall neon -n neon
 ```
+
+
 
 ## 许可证
 
