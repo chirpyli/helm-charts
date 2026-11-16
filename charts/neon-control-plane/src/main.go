@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,25 @@ type state struct {
 	projects  map[string]*Project
 	branches  map[string]*Branch // 新增：branch_id → Branch
 	endpoints map[string]*Endpoint
+	// roles / databases 是分支级 catalog（desired state），key = catalogKey(branchID, name)。
+	// 使用扁平 map 而不是嵌套 map，便于按 branch 前缀聚合且避免 nil 嵌套判空。
+	roles     map[string]*Role
+	databases map[string]*Database
+}
+
+// catalogKey 生成 roles/databases 的扁平 map 键。
+func catalogKey(branchID, name string) string {
+	return branchID + "\x00" + name
+}
+
+// ensureCatalogMapsLocked 为 roles/databases 初始化 map；调用方必须持有 st.mu 写锁。
+func (s *state) ensureCatalogMapsLocked() {
+	if s.roles == nil {
+		s.roles = map[string]*Role{}
+	}
+	if s.databases == nil {
+		s.databases = map[string]*Database{}
+	}
 }
 
 // =============================================================================
@@ -99,6 +119,8 @@ func main() {
 		projects:  map[string]*Project{},
 		branches:  map[string]*Branch{},
 		endpoints: map[string]*Endpoint{},
+		roles:     map[string]*Role{},
+		databases: map[string]*Database{},
 	}
 
 	// 尝试 K8s 客户端初始化（持久化 + compute 编排用）
@@ -172,6 +194,10 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 
+	// ---- Region API（自托管单 region） ----
+	case path == "regions" && r.Method == http.MethodGet:
+		listRegions(w, r)
+
 	// ---- Project API ----
 	case path == "projects" && r.Method == http.MethodPost:
 		createProject(w, r)
@@ -189,6 +215,63 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		listBranches(w, r, parts[1])
 	case len(parts) == 4 && parts[0] == "projects" && parts[2] == "branches" && r.Method == http.MethodDelete:
 		deleteBranch(w, r, parts[1], parts[3])
+	case len(parts) == 4 && parts[0] == "projects" && parts[2] == "branches" && r.Method == http.MethodGet:
+		getBranch(w, r, parts[1], parts[3])
+	// 分支下的 endpoint 列表：/projects/{pid}/branches/{bid}/endpoints
+	case len(parts) == 5 && parts[0] == "projects" && parts[2] == "branches" &&
+		parts[4] == "endpoints" && r.Method == http.MethodGet:
+		listBranchEndpoints(w, r, parts[1], parts[3])
+
+	// ---- Roles API（分支级 catalog） ----
+	case len(parts) == 5 && parts[0] == "projects" && parts[2] == "branches" && parts[4] == "roles":
+		switch r.Method {
+		case http.MethodPost:
+			createRole(w, r, parts[1], parts[3])
+		case http.MethodGet:
+			listRoles(w, r, parts[1], parts[3])
+		default:
+			http.NotFound(w, r)
+		}
+	case len(parts) == 6 && parts[0] == "projects" && parts[2] == "branches" && parts[4] == "roles":
+		switch r.Method {
+		case http.MethodGet:
+			getRole(w, r, parts[1], parts[3], parts[5])
+		case http.MethodDelete:
+			deleteRole(w, r, parts[1], parts[3], parts[5])
+		default:
+			http.NotFound(w, r)
+		}
+	case len(parts) == 7 && parts[0] == "projects" && parts[2] == "branches" && parts[4] == "roles":
+		switch {
+		case parts[6] == "reset_password" && r.Method == http.MethodPost:
+			resetRolePassword(w, r, parts[1], parts[3], parts[5])
+		case parts[6] == "reveal_password" && r.Method == http.MethodGet:
+			revealRolePassword(w, r, parts[1], parts[3], parts[5])
+		default:
+			http.NotFound(w, r)
+		}
+
+	// ---- Databases API（分支级 catalog） ----
+	case len(parts) == 5 && parts[0] == "projects" && parts[2] == "branches" && parts[4] == "databases":
+		switch r.Method {
+		case http.MethodPost:
+			createDatabase(w, r, parts[1], parts[3])
+		case http.MethodGet:
+			listDatabases(w, r, parts[1], parts[3])
+		default:
+			http.NotFound(w, r)
+		}
+	case len(parts) == 6 && parts[0] == "projects" && parts[2] == "branches" && parts[4] == "databases":
+		switch r.Method {
+		case http.MethodGet:
+			getDatabase(w, r, parts[1], parts[3], parts[5])
+		case http.MethodPatch:
+			updateDatabase(w, r, parts[1], parts[3], parts[5])
+		case http.MethodDelete:
+			deleteDatabase(w, r, parts[1], parts[3], parts[5])
+		default:
+			http.NotFound(w, r)
+		}
 
 	// ---- Endpoint API ----
 	case len(parts) == 3 && parts[0] == "projects" && parts[2] == "endpoints" && r.Method == http.MethodPost:
@@ -197,6 +280,8 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		listEndpoints(w, r, parts[1])
 	case len(parts) == 4 && parts[0] == "projects" && parts[2] == "endpoints" && r.Method == http.MethodDelete:
 		deleteEndpoint(w, r, parts[1], parts[3])
+	case len(parts) == 4 && parts[0] == "projects" && parts[2] == "endpoints" && r.Method == http.MethodGet:
+		getEndpoint(w, r, parts[1], parts[3])
 
 	// ---- 连接串 API（对齐 Neon：GET /projects/{id}/connection_uri） ----
 	case len(parts) == 3 && parts[0] == "projects" && parts[2] == "connection_uri" && r.Method == http.MethodGet:
@@ -385,8 +470,42 @@ func createProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": credErr.Error()})
 		return
 	}
+	// 7.1) 角色级 Secret 与 catalog 行：角色/数据库属于分支，endpoint 只是入口。
+	// verifier 与 endpoint Secret 同值，但按 (branch, role) 独立管理，便于后续单独重置密码。
+	now := nowRFC3339()
+	initialRole := &Role{
+		BranchID:   mainBranch.BranchID,
+		Name:       roleName,
+		SecretName: roleSecretName(mainBranch.BranchID, roleName),
+		SecretKey:  defaultCredentialSecretKey,
+		Protected:  true,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	initialDB := &Database{
+		BranchID:  mainBranch.BranchID,
+		Name:      databaseName,
+		OwnerName: roleName,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if putErr := credStore.PutSecret(initialRole.SecretName, initialRole.SecretKey, ep.ScramVerifier); putErr != nil {
+		logWarn("createProject %s: 创建角色 Secret 失败，执行逆序补偿：%v", projectID, putErr)
+		compensateCreate(context.Background(), &ProjectBundle{
+			Project: p, Branch: mainBranch, Roles: []*Role{initialRole}, Endpoint: ep,
+		})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": putErr.Error()})
+		return
+	}
+	st.mu.Lock()
+	st.ensureCatalogMapsLocked()
+	st.roles[catalogKey(initialRole.BranchID, initialRole.Name)] = initialRole
+	st.databases[catalogKey(initialDB.BranchID, initialDB.Name)] = initialDB
+	st.mu.Unlock()
+
 	bundle := &ProjectBundle{
-		Project: p, Branch: mainBranch, Endpoint: ep, Credential: cred,
+		Project: p, Branch: mainBranch, Roles: []*Role{initialRole}, Databases: []*Database{initialDB},
+		Endpoint: ep, Credential: cred,
 	}
 
 	// 8) PG 事务（Saga 第 4 步）：本地权威状态先于 K8s 副作用落地。
@@ -492,6 +611,80 @@ func getProject(w http.ResponseWriter, r *http.Request, id string) {
 	writeJSON(w, http.StatusOK, p)
 }
 
+// listRegions 返回自托管部署的单一 region（对齐官方 ActiveRegionsResponse）。
+// 控制面没有多云 region 概念，region_id 只用于满足 CLI/SDK 的发现流程。
+func listRegions(w http.ResponseWriter, _ *http.Request) {
+	regionID := "default"
+	if cfg != nil && cfg.RegionID != "" {
+		regionID = cfg.RegionID
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"regions": []Region{{
+			RegionID: regionID,
+			Name:     "Default region",
+			Default:  true,
+			GeoLat:   "",
+			GeoLong:  "",
+		}},
+	})
+}
+
+// getBranch 返回单个分支；project 或 branch 不存在统一返回 404，避免资源探测。
+func getBranch(w http.ResponseWriter, r *http.Request, projectID, branchID string) {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+
+	if _, ok := st.projects[projectID]; !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "branch not found"})
+		return
+	}
+	b, ok := st.branches[branchID]
+	if !ok || b.ProjectID != projectID {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "branch not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+// getEndpoint 返回单个 endpoint；project 或 endpoint 不存在统一返回 404。
+func getEndpoint(w http.ResponseWriter, r *http.Request, projectID, endpointID string) {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+
+	ep, ok := st.endpoints[endpointID]
+	if !ok || ep.ProjectID != projectID {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "endpoint not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, ep)
+}
+
+// listBranchEndpoints 列出分支下的所有 endpoint（主节点 + 只读副本）。
+// 按 endpoint_id 排序，保证响应稳定（Endpoint 没有持久化 created_at）。
+func listBranchEndpoints(w http.ResponseWriter, r *http.Request, projectID, branchID string) {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+
+	if _, ok := st.projects[projectID]; !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "branch not found"})
+		return
+	}
+	b, ok := st.branches[branchID]
+	if !ok || b.ProjectID != projectID {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "branch not found"})
+		return
+	}
+
+	out := make([]*Endpoint, 0)
+	for _, ep := range st.endpoints {
+		if ep.ProjectID == projectID && ep.BranchID == branchID {
+			out = append(out, ep)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].EndpointID < out[j].EndpointID })
+	writeJSON(w, http.StatusOK, out)
+}
+
 // deleteProject 删除指定 project 及其所有关联的 branches 和 endpoints。
 // 删除流程（参考 Neon API DELETE /projects/{project_id}）：
 //  1. 校验 project 存在
@@ -530,6 +723,23 @@ func deleteProject(w http.ResponseWriter, r *http.Request, projectID string) {
 			projectEndpoints = append(projectEndpoints, ep)
 		}
 	}
+	// 以及分支级 catalog（角色 Secret 需要单独清理）。
+	branchSet := make(map[string]bool, len(projectBranches))
+	for _, b := range projectBranches {
+		branchSet[b.BranchID] = true
+	}
+	var projectRoles []*Role
+	var projectDBs []*Database
+	for _, r := range st.roles {
+		if branchSet[r.BranchID] {
+			projectRoles = append(projectRoles, r)
+		}
+	}
+	for _, d := range st.databases {
+		if branchSet[d.BranchID] {
+			projectDBs = append(projectDBs, d)
+		}
+	}
 	st.mu.RUnlock()
 
 	// 3) 先清理所有 endpoint 的 K8s 资源（在加写锁之前做 IO 操作）
@@ -537,29 +747,9 @@ func deleteProject(w http.ResponseWriter, r *http.Request, projectID string) {
 		cleanupK8sComputeResources(ep.EndpointID)
 	}
 
-	// 4) 对每个 branch 删除 SC timeline（best-effort）
-	type branchOpResult struct {
-		BranchID   string `json:"branch_id"`
-		TimelineID string `json:"timeline_id"`
-		Deleted    bool   `json:"timeline_deleted"`
-		Error      string `json:"error,omitempty"`
-	}
-	branchResults := make([]branchOpResult, 0, len(projectBranches))
-
-	for _, b := range projectBranches {
-		opResult := branchOpResult{BranchID: b.BranchID, TimelineID: b.TimelineID}
-		if err := sc.deleteTimeline(context.Background(), b.TenantID, b.TimelineID); err != nil {
-			logWarn("deleteProject %s: delete timeline %s (branch=%s): %v",
-				projectID, b.TimelineID, b.BranchID, err)
-			opResult.Error = err.Error()
-		} else {
-			opResult.Deleted = true
-		}
-		branchResults = append(branchResults, opResult)
-	}
-
-	// 4.5) 删除该 project 独占的 tenant（best-effort）
-	//      每个 project 拥有独立 tenant，project 删除后 tenant 也应清理
+	// 4) 删除该 project 独占的 tenant（best-effort）。
+	//    优先删 tenant：tenant 删除会级联清理其下所有 timeline，避免先删父 timeline
+	//    时因子 timeline 尚未删完而报 "Cannot delete timeline which has child timelines"。
 	tenantDeleted := false
 	tenantErr := ""
 	if p.TenantID != "" {
@@ -572,6 +762,33 @@ func deleteProject(w http.ResponseWriter, r *http.Request, projectID string) {
 		}
 	}
 
+	// 4.1) 分支结果：tenant 删除成功时所有 timeline 已随之删除；
+	//      否则按子→父顺序尽量删除 timeline（SC 对父 timeline 有子 timeline 时会拒绝）。
+	type branchOpResult struct {
+		BranchID   string `json:"branch_id"`
+		TimelineID string `json:"timeline_id"`
+		Deleted    bool   `json:"timeline_deleted"`
+		Error      string `json:"error,omitempty"`
+	}
+	branchResults := make([]branchOpResult, 0, len(projectBranches))
+
+	for _, b := range sortBranchesForDeletion(projectBranches) {
+		opResult := branchOpResult{BranchID: b.BranchID, TimelineID: b.TimelineID}
+		if tenantDeleted {
+			opResult.Deleted = true
+			branchResults = append(branchResults, opResult)
+			continue
+		}
+		if err := sc.deleteTimeline(context.Background(), b.TenantID, b.TimelineID); err != nil {
+			logWarn("deleteProject %s: delete timeline %s (branch=%s): %v",
+				projectID, b.TimelineID, b.BranchID, err)
+			opResult.Error = err.Error()
+		} else {
+			opResult.Deleted = true
+		}
+		branchResults = append(branchResults, opResult)
+	}
+
 	// 5) 先写库：失败则保持内存不变并返回 5xx，避免「删除成功但重启复活」。
 	if err := storeDeleteProject(projectID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -582,6 +799,11 @@ func deleteProject(w http.ResponseWriter, r *http.Request, projectID string) {
 			queueCleanup("secret", ep.EndpointID, err.Error())
 		}
 	}
+	for _, r := range projectRoles {
+		if err := credStore.DeleteSecret(r.SecretName, r.SecretKey); err != nil {
+			queueCleanup("secret", r.SecretName, err.Error())
+		}
+	}
 
 	// 6) 本地权威删除成功后，再更新内存态
 	st.mu.Lock()
@@ -590,6 +812,12 @@ func deleteProject(w http.ResponseWriter, r *http.Request, projectID string) {
 	}
 	for _, b := range projectBranches {
 		delete(st.branches, b.BranchID)
+	}
+	for _, r := range projectRoles {
+		delete(st.roles, catalogKey(r.BranchID, r.Name))
+	}
+	for _, d := range projectDBs {
+		delete(st.databases, catalogKey(d.BranchID, d.Name))
 	}
 	delete(st.projects, projectID)
 	st.mu.Unlock()
@@ -608,6 +836,24 @@ func deleteProject(w http.ResponseWriter, r *http.Request, projectID string) {
 		resp["tenant_delete_error"] = tenantErr
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// sortBranchesForDeletion 按分支深度倒序（子分支在前），供 tenant 删除失败时
+// 逐条清理 timeline 使用：SC 拒绝删除仍有子 timeline 的父 timeline。
+func sortBranchesForDeletion(branches []*Branch) []*Branch {
+	byID := make(map[string]*Branch, len(branches))
+	for _, b := range branches {
+		byID[b.BranchID] = b
+	}
+	out := append([]*Branch(nil), branches...)
+	sort.SliceStable(out, func(i, j int) bool {
+		di, dj := branchDepth(out[i], byID), branchDepth(out[j], byID)
+		if di != dj {
+			return di > dj
+		}
+		return out[i].BranchID < out[j].BranchID
+	})
+	return out
 }
 
 // =============================================================================
@@ -643,12 +889,13 @@ func createBranch(w http.ResponseWriter, r *http.Request, projectID string) {
 		return
 	}
 
-	// 确定父分支的时间线 ID
-	var parentTimelineID string
+	// 确定父分支的时间线与 branch_id（后者用于复制 catalog）
+	var parentTimelineID, parentBranchID string
 	if req.ParentBranchID != "" {
 		st.mu.RLock()
-		if parentBranch, ok := st.branches[req.ParentBranchID]; ok {
+		if parentBranch, ok := st.branches[req.ParentBranchID]; ok && parentBranch.ProjectID == projectID {
 			parentTimelineID = parentBranch.TimelineID
+			parentBranchID = parentBranch.BranchID
 		}
 		st.mu.RUnlock()
 	}
@@ -658,6 +905,7 @@ func createBranch(w http.ResponseWriter, r *http.Request, projectID string) {
 		for _, b := range st.branches {
 			if b.ProjectID == projectID && b.Default && b.TimelineID != "" {
 				parentTimelineID = b.TimelineID
+				parentBranchID = b.BranchID
 				break
 			}
 		}
@@ -692,17 +940,51 @@ func createBranch(w http.ResponseWriter, r *http.Request, projectID string) {
 		TenantID:   p.TenantID,
 		TimelineID: timelineID,
 		Name:       req.Name,
-		ParentID:   req.ParentBranchID,
+		ParentID:   parentBranchID,
+	}
+
+	// 复制父分支 catalog：timeline 分叉时角色/数据库的密码哈希一起继承，
+	// 但 Secret 必须按子分支独立创建，以便后续在分支间独立重置密码。
+	var catalogRoles []*Role
+	var catalogDBs []*Database
+	if parentBranchID != "" {
+		catalogRoles, catalogDBs, err = cloneCatalogToBranch(parentBranchID, branchID)
+		if err != nil {
+			logWarn("createBranch %s: 复制父分支 catalog 失败：%v", branchID, err)
+			if delErr := sc.deleteTimeline(context.Background(), p.TenantID, timelineID); delErr != nil {
+				queueCleanup("timeline", timelineID, delErr.Error())
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	st.mu.Lock()
 	st.branches[branchID] = branch
+	st.ensureCatalogMapsLocked()
+	for _, r := range catalogRoles {
+		st.roles[catalogKey(r.BranchID, r.Name)] = r
+	}
+	for _, d := range catalogDBs {
+		st.databases[catalogKey(d.BranchID, d.Name)] = d
+	}
 	st.mu.Unlock()
 
-	if err := storeUpsertBranch(branch); err != nil {
+	if err := storeUpsertBranchCatalog(branch, catalogRoles, catalogDBs); err != nil {
 		st.mu.Lock()
 		delete(st.branches, branchID)
+		for _, r := range catalogRoles {
+			delete(st.roles, catalogKey(r.BranchID, r.Name))
+		}
+		for _, d := range catalogDBs {
+			delete(st.databases, catalogKey(d.BranchID, d.Name))
+		}
 		st.mu.Unlock()
+		for _, r := range catalogRoles {
+			if delErr := credStore.DeleteSecret(r.SecretName, r.SecretKey); delErr != nil {
+				queueCleanup("secret", r.SecretName, delErr.Error())
+			}
+		}
 		if delErr := sc.deleteTimeline(context.Background(), p.TenantID, timelineID); delErr != nil {
 			queueCleanup("timeline", timelineID, delErr.Error())
 		}
@@ -843,6 +1125,7 @@ func deleteBranch(w http.ResponseWriter, r *http.Request, projectID, branchID st
 	}
 
 	// 7) 先写库：失败则保持内存不变并返回 5xx。
+	branchRoles, branchDBs := catalogForBranch(branchID)
 	if err := storeDeleteBranch(branchID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -852,11 +1135,22 @@ func deleteBranch(w http.ResponseWriter, r *http.Request, projectID, branchID st
 			queueCleanup("secret", ep.EndpointID, err.Error())
 		}
 	}
+	for _, r := range branchRoles {
+		if err := credStore.DeleteSecret(r.SecretName, r.SecretKey); err != nil {
+			queueCleanup("secret", r.SecretName, err.Error())
+		}
+	}
 
 	// 8) 加写锁，从 state 中移除
 	st.mu.Lock()
 	for _, ep := range branchEndpoints {
 		delete(st.endpoints, ep.EndpointID)
+	}
+	for _, r := range branchRoles {
+		delete(st.roles, catalogKey(r.BranchID, r.Name))
+	}
+	for _, d := range branchDBs {
+		delete(st.databases, catalogKey(d.BranchID, d.Name))
 	}
 	delete(st.branches, branchID)
 	st.mu.Unlock()
@@ -942,8 +1236,10 @@ func prepareEndpointForBranch(projectID, tenantID, timelineID, branchID,
 
 	// 只有初始化 catalog 时才下发 role/database；创建普通 endpoint 时二者为 nil，
 	// 避免重复创建角色、覆盖角色密码，以及给 read_only 副本下发无效配置。
-	var clusterRoles []RoleSpec
-	var clusterDatabases []DatabaseSpec
+	// 空 catalog 必须序列化为 []，不能是 null：compute_ctl 的 Cluster.roles/databases
+	// 是 Vec，收到 null 会直接反序列化失败（compute 起不来）。
+	clusterRoles := []RoleSpec{}
+	clusterDatabases := []DatabaseSpec{}
 	if applyCatalog {
 		clusterRoles = []RoleSpec{{Name: roleName, EncryptedPassword: verifier}}
 		clusterDatabases = []DatabaseSpec{{Name: databaseName, Owner: roleName}}
@@ -1549,7 +1845,21 @@ func getEndpointAccessControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// role_secret 从凭据缓存 / Secret 引用装配；验证器不落业务库，也不落 ConfigMap。
-	roleSecret, credErr := credStore.Get(ep)
+	// 传入 role 时按分支 catalog 查对应角色；未传时保持 endpoint 默认身份（兼容旧 proxy）。
+	roleSecret := ""
+	var credErr error
+	if roleName := r.URL.Query().Get("role"); roleName != "" {
+		st.mu.RLock()
+		role := roleExistsLocked(ep.BranchID, roleName)
+		st.mu.RUnlock()
+		if role == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "role not found"})
+			return
+		}
+		roleSecret, credErr = credStore.GetSecret(role.SecretName, role.SecretKey)
+	} else {
+		roleSecret, credErr = credStore.Get(ep)
+	}
 	if credErr != nil {
 		logWarn("getEndpointAccessControl %s: 解析凭据失败：%v", ep.EndpointID, credErr)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": credErr.Error()})
@@ -1638,35 +1948,41 @@ func buildSpecFromEndpoint(ep *Endpoint) (*ComputeSpec, error) {
 		}
 	}
 
-	// 角色/数据库属于分支：优先复用内存 spec，其次用持久化的凭据引用重建。
-	// 不再回退到硬编码的 cloud_admin/postgres —— 那会把连接身份指向不存在的角色。
-	roleName, dbName, owner := ep.RoleName, ep.DatabaseName, ep.Owner
-	if owner == "" {
-		owner = roleName
-	}
+	// 角色/数据库属于分支 catalog：优先从 registry 构建（支持多角色/多库）。
+	// registry 为空时回退到 endpoint 的默认身份，保证升级前创建的老 endpoint 仍可重建。
 	var roles []RoleSpec
 	var dbs []DatabaseSpec
-	if roleName != "" && dbName != "" {
-		verifier, credErr := credStore.Get(ep)
-		if credErr != nil {
-			// 只读副本不应用 catalog，缺验证器不影响运行；主节点必须能拿到验证器。
-			if ep.Type != EndpointTypeReadOnly {
+	if ep.Type != EndpointTypeReadOnly {
+		catalogRoles, catalogDBs, catalogErr := buildSpecCatalog(ep.BranchID)
+		if catalogErr != nil {
+			return nil, fmt.Errorf("构建分支 catalog：%w", catalogErr)
+		}
+		if len(catalogRoles) > 0 || len(catalogDBs) > 0 {
+			roles, dbs = catalogRoles, catalogDBs
+		} else if ep.RoleName != "" && ep.DatabaseName != "" {
+			verifier, credErr := credStore.Get(ep)
+			if credErr != nil {
 				return nil, fmt.Errorf("重建 spec 时解析 SCRAM 凭据：%w", credErr)
 			}
-			logWarn("buildSpecFromEndpoint %s: 只读副本缺少 SCRAM 凭据，跳过 catalog: %v",
-				ep.EndpointID, credErr)
-		} else {
-			roles = []RoleSpec{{Name: roleName, EncryptedPassword: verifier}}
-			dbs = []DatabaseSpec{{Name: dbName, Owner: owner}}
+			owner := ep.Owner
+			if owner == "" {
+				owner = ep.RoleName
+			}
+			roles = []RoleSpec{{Name: ep.RoleName, EncryptedPassword: verifier}}
+			dbs = []DatabaseSpec{{Name: ep.DatabaseName, Owner: owner}}
 		}
 	}
-	if ep.Spec != nil && ep.Spec.Cluster != nil {
-		if len(ep.Spec.Cluster.Roles) > 0 {
-			roles = ep.Spec.Cluster.Roles
-		}
-		if len(ep.Spec.Cluster.Databases) > 0 {
-			dbs = ep.Spec.Cluster.Databases
-		}
+	if ep.Spec != nil && ep.Spec.Cluster != nil && len(roles) == 0 && len(dbs) == 0 {
+		// 最后一次兜底：仅在完全拿不到 catalog 时复用内存 spec。
+		roles = ep.Spec.Cluster.Roles
+		dbs = ep.Spec.Cluster.Databases
+	}
+	// compute_ctl 的 Cluster.roles/databases 是 Vec，null 会反序列化失败。
+	if roles == nil {
+		roles = []RoleSpec{}
+	}
+	if dbs == nil {
+		dbs = []DatabaseSpec{}
 	}
 
 	// 模式必须与 endpoint 类型一致：read_only 是 hot standby，

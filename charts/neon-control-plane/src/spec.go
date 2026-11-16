@@ -35,7 +35,17 @@ type ComputeSpec struct {
 	EndpointStorageToken string          `json:"endpoint_storage_token,omitempty"`
 	// suspend_timeout_seconds 为必填字段（新版本 compute_ctl 引入），0 表示不自动暂停。
 	SuspendTimeoutSeconds int64 `json:"suspend_timeout_seconds"`
-	// DatabricksSettings 为可选字段，compute_ctl 新版本支持，先省略
+	// DeltaOperations 表达无法用静态 cluster 结构描述的变更（删除/重命名）。
+	// 对应上游 DeltaOp；只在一次 /configure 中下发，成功后清空。
+	DeltaOperations []DeltaOp `json:"delta_operations,omitempty"`
+}
+
+// DeltaOp 对应 compute_api::spec::DeltaOp：
+// delete_role / delete_db / rename_db / rename_role。
+type DeltaOp struct {
+	Action  string `json:"action"`
+	Name    string `json:"name"`
+	NewName string `json:"new_name,omitempty"`
 }
 
 // =============================================================================

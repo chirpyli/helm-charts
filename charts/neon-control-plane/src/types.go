@@ -39,6 +39,9 @@ type Config struct {
 	// 拼接到返回给用户的连接串 <NodePortExternalHost>:<nodePort>；为空时回退 localhost。
 	NodePortExternalHost string `json:"node_port_external_host"`
 	Domain               string `json:"domain"`
+	// RegionID 自托管部署的单一 region 标识，用于 GET /regions 与 project 默认 region。
+	// 未配置时回退 "default"。
+	RegionID string `json:"region_id"`
 
 	// ComputeCtlPort compute_ctl 的外部 HTTP 端口（默认 3080）。
 	// 控制面通过它向 compute 推送重配置（POST /configure），必须与
@@ -199,9 +202,41 @@ func (e Endpoint) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// Role 是分支级 Postgres 角色（desired state）。
+// SCRAM verifier 存在独立的 K8s Secret 中，这里只保存引用；
+// Password 仅在创建/重置密码的响应中临时填充，不落库。
+type Role struct {
+	BranchID   string `json:"branch_id"`
+	Name       string `json:"name"`
+	SecretName string `json:"-"`
+	SecretKey  string `json:"-"`
+	Protected  bool   `json:"protected"`
+	CreatedAt  string `json:"created_at,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+	Password   string `json:"password,omitempty"`
+}
+
+// Database 是分支级 Postgres 数据库（desired state）。
+type Database struct {
+	BranchID  string `json:"branch_id"`
+	Name      string `json:"name"`
+	OwnerName string `json:"owner_name"`
+	CreatedAt string `json:"created_at,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
 // =============================================================================
 // API 请求/响应类型
 // =============================================================================
+
+// Region 对齐官方 RegionResponse：自托管部署只有一个静态 region。
+type Region struct {
+	RegionID string `json:"region_id"`
+	Name     string `json:"name"`
+	Default  bool   `json:"default"`
+	GeoLat   string `json:"geo_lat"`
+	GeoLong  string `json:"geo_long"`
+}
 
 // ProjectCreateRequest POST /projects 请求体（对齐 Neon Cloud API v2）。
 // 示例：{"project":{"name":"myproject","branch":{"name":"main","role_name":"sally","database_name":"mydb"}}}
@@ -257,6 +292,30 @@ func (r *EndpointCreateRequest) normalize() (branchID, epType string, err error)
 type BranchCreateRequest struct {
 	Name           string `json:"name"`                       // 分支名称
 	ParentBranchID string `json:"parent_branch_id,omitempty"` // 父分支 ID，空则表示从 main 分支
+}
+
+// RoleCreateRequest POST .../roles 请求体（官方嵌套形态）。
+type RoleCreateRequest struct {
+	Role struct {
+		Name    string `json:"name"`
+		NoLogin bool   `json:"no_login"`
+	} `json:"role"`
+}
+
+// DatabaseCreateRequest POST .../databases 请求体。
+type DatabaseCreateRequest struct {
+	Database struct {
+		Name      string `json:"name"`
+		OwnerName string `json:"owner_name"`
+	} `json:"database"`
+}
+
+// DatabaseUpdateRequest PATCH .../databases/{name} 请求体。
+type DatabaseUpdateRequest struct {
+	Database struct {
+		Name      string `json:"name"`
+		OwnerName string `json:"owner_name"`
+	} `json:"database"`
 }
 
 // =============================================================================

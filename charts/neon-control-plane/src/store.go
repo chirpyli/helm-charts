@@ -54,12 +54,16 @@ type StateSnapshot struct {
 	Branches    map[string]*Branch
 	Endpoints   map[string]*Endpoint
 	Credentials map[string]*EndpointCredential
+	Roles       []*Role
+	Databases   []*Database
 }
 
 // ProjectBundle 创建 project 时在同一事务内落库的实体集合。
 type ProjectBundle struct {
 	Project    *Project
 	Branch     *Branch
+	Roles      []*Role
+	Databases  []*Database
 	Endpoint   *Endpoint
 	Credential *EndpointCredential
 }
@@ -71,9 +75,20 @@ type StateStore interface {
 	CreateProjectBundle(ctx context.Context, b *ProjectBundle) error
 	UpsertBranch(ctx context.Context, b *Branch) error
 	DeleteBranch(ctx context.Context, branchID string) error
+	// UpsertBranchCatalog 在同一事务内写 branch 及其 roles/databases（分支创建时使用）。
+	UpsertBranchCatalog(ctx context.Context, b *Branch, roles []*Role, dbs []*Database) error
 	UpsertEndpoint(ctx context.Context, ep *Endpoint, cred *EndpointCredential) error
 	DeleteEndpoint(ctx context.Context, endpointID string) error
 	DeleteProject(ctx context.Context, projectID string) error
+	// 分支级 catalog 读写。
+	ListRoles(ctx context.Context, branchID string) ([]*Role, error)
+	GetRole(ctx context.Context, branchID, name string) (*Role, error)
+	UpsertRole(ctx context.Context, r *Role) error
+	DeleteRole(ctx context.Context, branchID, name string) error
+	ListDatabases(ctx context.Context, branchID string) ([]*Database, error)
+	GetDatabase(ctx context.Context, branchID, name string) (*Database, error)
+	UpsertDatabase(ctx context.Context, d *Database) error
+	DeleteDatabase(ctx context.Context, branchID, name string) error
 	UpdateRecoveryState(ctx context.Context, endpointID string, patch RecoveryPatch) error
 	UpdateObservedStatus(ctx context.Context, updates []StatusUpdate) error
 	ResolveCredentials(ctx context.Context, ep *Endpoint) (string, error)
@@ -162,6 +177,14 @@ func applySnapshot(snap *StateSnapshot) {
 	if st.endpoints == nil {
 		st.endpoints = map[string]*Endpoint{}
 	}
+	st.roles = make(map[string]*Role, len(snap.Roles))
+	for _, r := range snap.Roles {
+		st.roles[catalogKey(r.BranchID, r.Name)] = r
+	}
+	st.databases = make(map[string]*Database, len(snap.Databases))
+	for _, d := range snap.Databases {
+		st.databases[catalogKey(d.BranchID, d.Name)] = d
+	}
 	st.mu.Unlock()
 	// 预热凭据引用缓存，避免首次鉴权请求打到 apiserver。
 	credStore.Warm(snap.Credentials, snap.Endpoints)
@@ -188,6 +211,9 @@ func storeCreateBundle(b *ProjectBundle) error {
 }
 func storeUpsertBranch(b *Branch) error {
 	return getStore().UpsertBranch(context.Background(), b)
+}
+func storeUpsertBranchCatalog(b *Branch, roles []*Role, dbs []*Database) error {
+	return getStore().UpsertBranchCatalog(context.Background(), b, roles, dbs)
 }
 func storeDeleteBranch(id string) error {
 	return getStore().DeleteBranch(context.Background(), id)

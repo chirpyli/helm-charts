@@ -58,10 +58,18 @@ func compensateCreate(ctx context.Context, b *ProjectBundle) {
 	if err := getStore().DeleteProject(ctx, projectID); err != nil {
 		queueCleanup("db", projectID, err.Error())
 	}
-	// 3) 撤销凭据 Secret 与缓存。
+	// 3) 撤销凭据 Secret 与缓存（endpoint 级 + 角色级）。
 	if endpointID != "" {
 		if err := credStore.Delete(endpointID); err != nil {
 			queueCleanup("secret", endpointID, err.Error())
+		}
+	}
+	for _, r := range b.Roles {
+		if r == nil || r.SecretName == "" {
+			continue
+		}
+		if err := credStore.DeleteSecret(r.SecretName, r.SecretKey); err != nil {
+			queueCleanup("secret", r.SecretName, err.Error())
 		}
 	}
 	// 4) 撤销 SC 侧 timeline 与 tenant。
@@ -87,6 +95,21 @@ func compensateCreate(ctx context.Context, b *ProjectBundle) {
 		for id, ep := range st.endpoints {
 			if ep != nil && ep.ProjectID == projectID {
 				delete(st.endpoints, id)
+			}
+		}
+		// 分支已删除，其 catalog 也一并清理。
+		for k, r := range st.roles {
+			if r != nil {
+				if _, ok := st.branches[r.BranchID]; !ok {
+					delete(st.roles, k)
+				}
+			}
+		}
+		for k, d := range st.databases {
+			if d != nil {
+				if _, ok := st.branches[d.BranchID]; !ok {
+					delete(st.databases, k)
+				}
 			}
 		}
 		st.mu.Unlock()

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,21 +23,103 @@ import (
 const (
 	defaultCredentialSecretKey = "scram_verifier"
 	credentialSecretPrefix     = "neon-cp-cred-"
+	roleSecretPrefix           = "neon-cp-role-"
 )
 
 type credentialCache struct {
 	mu        sync.RWMutex
 	verifiers map[string]string              // endpoint_id -> SCRAM 验证器
 	refs      map[string]*EndpointCredential // endpoint_id -> Secret 引用
+	// secrets 按 (secret_name, secret_key) 缓存 verifier，供 role 级凭据使用。
+	// endpoint 级缓存保留以兼容既有逻辑；两个缓存都只是性能优化。
+	secrets map[string]string
 }
 
 var credStore = &credentialCache{
 	verifiers: map[string]string{},
 	refs:      map[string]*EndpointCredential{},
+	secrets:   map[string]string{},
 }
 
 func credentialSecretName(endpointID string) string {
 	return credentialSecretPrefix + endpointID
+}
+
+// roleSecretName 返回 (branch, role) 的 verifier Secret 名称。
+// 使用 SHA-256 前 32 个 hex 字符（128 bit），既满足 K8s Secret 的 DNS-1123 命名约束，
+// 也避免角色名中的大写/下划线/超长问题。
+func roleSecretName(branchID, roleName string) string {
+	sum := sha256.Sum256([]byte(branchID + "\x00" + roleName))
+	return roleSecretPrefix + hex.EncodeToString(sum[:])[:32]
+}
+
+func secretCacheKey(name, key string) string {
+	return name + "\x00" + key
+}
+
+// GetSecret 读取任意 Secret 引用的 verifier：内存缓存 → K8s Secret。
+func (c *credentialCache) GetSecret(name, key string) (string, error) {
+	if name == "" || key == "" {
+		return "", fmt.Errorf("Secret 引用不完整")
+	}
+	cacheKey := secretCacheKey(name, key)
+	c.mu.RLock()
+	v, ok := c.secrets[cacheKey]
+	c.mu.RUnlock()
+	if ok && v != "" {
+		metricCredCacheHit.Add(1)
+		return v, nil
+	}
+	metricCredCacheMiss.Add(1)
+	if kubePersist == nil {
+		return "", fmt.Errorf("Secret %s 缓存未命中且不在 K8s 集群内", name)
+	}
+	verifier, err := readCredentialSecret(name, key)
+	if err != nil {
+		return "", fmt.Errorf("读取 Secret %s/%s 失败：%w", name, key, err)
+	}
+	c.mu.Lock()
+	c.secrets[cacheKey] = verifier
+	c.mu.Unlock()
+	return verifier, nil
+}
+
+// PutSecret 写入/更新 Secret 并刷新缓存；非集群环境下仅写内存缓存（单测）。
+func (c *credentialCache) PutSecret(name, key, verifier string) error {
+	if name == "" || key == "" {
+		return fmt.Errorf("Secret 引用不完整")
+	}
+	if verifier == "" {
+		return fmt.Errorf("verifier 为空，拒绝写入 Secret %s", name)
+	}
+	if kubePersist != nil {
+		if err := upsertCredentialSecret(name, key, verifier); err != nil {
+			return fmt.Errorf("写入 Secret %s 失败：%w", name, err)
+		}
+	}
+	c.mu.Lock()
+	c.secrets[secretCacheKey(name, key)] = verifier
+	c.mu.Unlock()
+	return nil
+}
+
+// DeleteSecret 删除 Secret 并清理缓存；404 视为已删除。
+func (c *credentialCache) DeleteSecret(name, key string) error {
+	c.mu.Lock()
+	delete(c.secrets, secretCacheKey(name, key))
+	c.mu.Unlock()
+	if kubePersist == nil {
+		return nil
+	}
+	path := fmt.Sprintf("/api/v1/namespaces/%s/secrets/%s", kubePersist.namespace, name)
+	_, code, err := kubePersist.doRequest(http.MethodDelete, path, nil)
+	if err != nil {
+		return fmt.Errorf("删除 Secret %s：%w", name, err)
+	}
+	if code >= 300 && code != http.StatusNotFound {
+		return fmt.Errorf("删除 Secret %s 返回 HTTP %d", name, code)
+	}
+	return nil
 }
 
 // Warm 启动时把持久层加载的凭据引用同步到端点对象与缓存。

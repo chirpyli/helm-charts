@@ -56,6 +56,8 @@ settings:
   statusReconcileIntervalSeconds: 15
   # -- proxy 兼容接口域名（phase-2 启用 proxy 时使用）
   domain: "neon.local"
+  # -- 自托管部署的单一 region 标识，用于 GET /regions 与 project 默认 region。
+  regionId: "default"
   # -- 持久化后端配置（连接串由外部 Secret 注入环境变量，绝不写入 values）
   stateStore:
     # postgres（生产与集群内测试） / memory（本地调试，重启丢失）

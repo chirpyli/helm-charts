@@ -169,6 +169,53 @@ func (s *postgresStateStore) Load(ctx context.Context) (*StateSnapshot, error) {
 	}
 	rows.Close()
 
+	rows, err = s.pool.Query(ctx, `
+		SELECT branch_id, role_name, secret_name, secret_key, protected, created_at, updated_at
+		FROM roles ORDER BY branch_id, role_name`)
+	if err != nil {
+		return nil, fmt.Errorf("查询 roles：%w", err)
+	}
+	for rows.Next() {
+		var r Role
+		var created, updated time.Time
+		if err := rows.Scan(&r.BranchID, &r.Name, &r.SecretName, &r.SecretKey,
+			&r.Protected, &created, &updated); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("扫描 roles：%w", err)
+		}
+		r.CreatedAt = created.UTC().Format(time.RFC3339)
+		r.UpdatedAt = updated.UTC().Format(time.RFC3339)
+		snap.Roles = append(snap.Roles, &r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("遍历 roles：%w", err)
+	}
+	rows.Close()
+
+	rows, err = s.pool.Query(ctx, `
+		SELECT branch_id, database_name, owner_name, created_at, updated_at
+		FROM databases ORDER BY branch_id, database_name`)
+	if err != nil {
+		return nil, fmt.Errorf("查询 databases：%w", err)
+	}
+	for rows.Next() {
+		var d Database
+		var created, updated time.Time
+		if err := rows.Scan(&d.BranchID, &d.Name, &d.OwnerName, &created, &updated); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("扫描 databases：%w", err)
+		}
+		d.CreatedAt = created.UTC().Format(time.RFC3339)
+		d.UpdatedAt = updated.UTC().Format(time.RFC3339)
+		snap.Databases = append(snap.Databases, &d)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("遍历 databases：%w", err)
+	}
+	rows.Close()
+
 	return snap, nil
 }
 
@@ -219,6 +266,18 @@ func (s *postgresStateStore) CreateProjectBundle(ctx context.Context, b *Project
 		b.Branch.Name, parent, b.Branch.Default); err != nil {
 		recordStoreWrite(err)
 		return fmt.Errorf("写入 branches：%w", err)
+	}
+	for _, r := range b.Roles {
+		if err := upsertRoleTx(ctx, tx, r); err != nil {
+			recordStoreWrite(err)
+			return err
+		}
+	}
+	for _, d := range b.Databases {
+		if err := upsertDatabaseTx(ctx, tx, d); err != nil {
+			recordStoreWrite(err)
+			return err
+		}
 	}
 	if b.Endpoint != nil {
 		if err := upsertEndpointTx(ctx, tx, b.Endpoint, b.Credential); err != nil {
@@ -302,11 +361,21 @@ func (s *postgresStateStore) DeleteBranch(ctx context.Context, branchID string) 
 		return fmt.Errorf("开启删除分支事务：%w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	// endpoint_credentials 由外键级联删除；先删端点再删分支。
+	// endpoint_credentials 由外键级联删除；catalog 有外键，必须先删 roles/databases。
 	if _, err := tx.Exec(ctx,
 		"DELETE FROM endpoints WHERE branch_id = $1", branchID); err != nil {
 		recordStoreWrite(err)
 		return fmt.Errorf("删除分支端点：%w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		"DELETE FROM databases WHERE branch_id = $1", branchID); err != nil {
+		recordStoreWrite(err)
+		return fmt.Errorf("删除分支数据库：%w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		"DELETE FROM roles WHERE branch_id = $1", branchID); err != nil {
+		recordStoreWrite(err)
+		return fmt.Errorf("删除分支角色：%w", err)
 	}
 	if _, err := tx.Exec(ctx,
 		"DELETE FROM branches WHERE branch_id = $1", branchID); err != nil {
@@ -351,9 +420,11 @@ func (s *postgresStateStore) DeleteProject(ctx context.Context, projectID string
 		return fmt.Errorf("开启删除项目事务：%w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	// 顺序：端点（凭据级联）→ 子分支 → 父分支 → 项目。
+	// 顺序：端点（凭据级联）→ catalog → 子分支 → 父分支 → 项目。
 	steps := []string{
 		"DELETE FROM endpoints WHERE project_id = $1",
+		"DELETE FROM databases WHERE branch_id IN (SELECT branch_id FROM branches WHERE project_id = $1)",
+		"DELETE FROM roles WHERE branch_id IN (SELECT branch_id FROM branches WHERE project_id = $1)",
 		"DELETE FROM branches WHERE project_id = $1 AND parent_id IS NOT NULL",
 		"DELETE FROM branches WHERE project_id = $1",
 		"DELETE FROM projects WHERE project_id = $1",
@@ -433,4 +504,213 @@ func (s *postgresStateStore) Flush(context.Context) error { return nil }
 func (s *postgresStateStore) Close(context.Context) error {
 	s.pool.Close()
 	return nil
+}
+
+// upsertBranchTx 在事务内写入 branch（与 UpsertBranch 同一 SQL）。
+func upsertBranchTx(ctx context.Context, tx pgx.Tx, b *Branch) error {
+	var parent any
+	if b.ParentID != "" {
+		parent = b.ParentID
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO branches (branch_id, project_id, tenant_id, timeline_id, name, parent_id, is_default)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (branch_id) DO UPDATE SET timeline_id = EXCLUDED.timeline_id,
+		    name = EXCLUDED.name, parent_id = EXCLUDED.parent_id,
+		    is_default = EXCLUDED.is_default, updated_at = now()`,
+		b.BranchID, b.ProjectID, b.TenantID, b.TimelineID, b.Name, parent, b.Default); err != nil {
+		return fmt.Errorf("写入 branches：%w", err)
+	}
+	return nil
+}
+
+// upsertRoleTx 在事务内写入角色（只含 Secret 引用，不含 verifier）。
+func upsertRoleTx(ctx context.Context, tx pgx.Tx, r *Role) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO roles (branch_id, role_name, secret_name, secret_key, protected)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (branch_id, role_name) DO UPDATE SET
+		    secret_name = EXCLUDED.secret_name, secret_key = EXCLUDED.secret_key,
+		    protected = EXCLUDED.protected, updated_at = now()`,
+		r.BranchID, r.Name, r.SecretName, r.SecretKey, r.Protected); err != nil {
+		return fmt.Errorf("写入 roles：%w", err)
+	}
+	return nil
+}
+
+// upsertDatabaseTx 在事务内写入数据库。
+func upsertDatabaseTx(ctx context.Context, tx pgx.Tx, d *Database) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO databases (branch_id, database_name, owner_name)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (branch_id, database_name) DO UPDATE SET
+		    owner_name = EXCLUDED.owner_name, updated_at = now()`,
+		d.BranchID, d.Name, d.OwnerName); err != nil {
+		return fmt.Errorf("写入 databases：%w", err)
+	}
+	return nil
+}
+
+// UpsertBranchCatalog 在同一事务内写 branch 及其 roles/databases（分支创建使用）。
+func (s *postgresStateStore) UpsertBranchCatalog(ctx context.Context, b *Branch, roles []*Role, dbs []*Database) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		recordStoreWrite(err)
+		return fmt.Errorf("开启分支目录事务：%w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := upsertBranchTx(ctx, tx, b); err != nil {
+		recordStoreWrite(err)
+		return err
+	}
+	for _, r := range roles {
+		if err := upsertRoleTx(ctx, tx, r); err != nil {
+			recordStoreWrite(err)
+			return err
+		}
+	}
+	for _, d := range dbs {
+		if err := upsertDatabaseTx(ctx, tx, d); err != nil {
+			recordStoreWrite(err)
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		recordStoreWrite(err)
+		return fmt.Errorf("提交分支目录事务：%w", err)
+	}
+	recordStoreWrite(nil)
+	return nil
+}
+
+func (s *postgresStateStore) ListRoles(ctx context.Context, branchID string) ([]*Role, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT branch_id, role_name, secret_name, secret_key, protected, created_at, updated_at
+		FROM roles WHERE branch_id = $1 ORDER BY role_name`, branchID)
+	if err != nil {
+		return nil, fmt.Errorf("查询 roles：%w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*Role, 0)
+	for rows.Next() {
+		var r Role
+		var created, updated time.Time
+		if err := rows.Scan(&r.BranchID, &r.Name, &r.SecretName, &r.SecretKey,
+			&r.Protected, &created, &updated); err != nil {
+			return nil, fmt.Errorf("扫描 roles：%w", err)
+		}
+		r.CreatedAt = created.UTC().Format(time.RFC3339)
+		r.UpdatedAt = updated.UTC().Format(time.RFC3339)
+		out = append(out, &r)
+	}
+	return out, rows.Err()
+}
+
+func (s *postgresStateStore) GetRole(ctx context.Context, branchID, name string) (*Role, error) {
+	var r Role
+	var created, updated time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT branch_id, role_name, secret_name, secret_key, protected, created_at, updated_at
+		FROM roles WHERE branch_id = $1 AND role_name = $2`, branchID, name).
+		Scan(&r.BranchID, &r.Name, &r.SecretName, &r.SecretKey, &r.Protected, &created, &updated)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询角色：%w", err)
+	}
+	r.CreatedAt = created.UTC().Format(time.RFC3339)
+	r.UpdatedAt = updated.UTC().Format(time.RFC3339)
+	return &r, nil
+}
+
+func (s *postgresStateStore) UpsertRole(ctx context.Context, r *Role) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		recordStoreWrite(err)
+		return fmt.Errorf("开启角色事务：%w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := upsertRoleTx(ctx, tx, r); err != nil {
+		recordStoreWrite(err)
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		recordStoreWrite(err)
+		return fmt.Errorf("提交角色事务：%w", err)
+	}
+	recordStoreWrite(nil)
+	return nil
+}
+
+func (s *postgresStateStore) DeleteRole(ctx context.Context, branchID, name string) error {
+	return s.execWrite(ctx,
+		"DELETE FROM roles WHERE branch_id = $1 AND role_name = $2", branchID, name)
+}
+
+func (s *postgresStateStore) ListDatabases(ctx context.Context, branchID string) ([]*Database, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT branch_id, database_name, owner_name, created_at, updated_at
+		FROM databases WHERE branch_id = $1 ORDER BY database_name`, branchID)
+	if err != nil {
+		return nil, fmt.Errorf("查询 databases：%w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*Database, 0)
+	for rows.Next() {
+		var d Database
+		var created, updated time.Time
+		if err := rows.Scan(&d.BranchID, &d.Name, &d.OwnerName, &created, &updated); err != nil {
+			return nil, fmt.Errorf("扫描 databases：%w", err)
+		}
+		d.CreatedAt = created.UTC().Format(time.RFC3339)
+		d.UpdatedAt = updated.UTC().Format(time.RFC3339)
+		out = append(out, &d)
+	}
+	return out, rows.Err()
+}
+
+func (s *postgresStateStore) GetDatabase(ctx context.Context, branchID, name string) (*Database, error) {
+	var d Database
+	var created, updated time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT branch_id, database_name, owner_name, created_at, updated_at
+		FROM databases WHERE branch_id = $1 AND database_name = $2`, branchID, name).
+		Scan(&d.BranchID, &d.Name, &d.OwnerName, &created, &updated)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询数据库：%w", err)
+	}
+	d.CreatedAt = created.UTC().Format(time.RFC3339)
+	d.UpdatedAt = updated.UTC().Format(time.RFC3339)
+	return &d, nil
+}
+
+func (s *postgresStateStore) UpsertDatabase(ctx context.Context, d *Database) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		recordStoreWrite(err)
+		return fmt.Errorf("开启数据库事务：%w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := upsertDatabaseTx(ctx, tx, d); err != nil {
+		recordStoreWrite(err)
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		recordStoreWrite(err)
+		return fmt.Errorf("提交数据库事务：%w", err)
+	}
+	recordStoreWrite(nil)
+	return nil
+}
+
+func (s *postgresStateStore) DeleteDatabase(ctx context.Context, branchID, name string) error {
+	return s.execWrite(ctx,
+		"DELETE FROM databases WHERE branch_id = $1 AND database_name = $2", branchID, name)
 }

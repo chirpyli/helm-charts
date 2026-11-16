@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sort"
 	"sync"
 )
 
@@ -16,6 +17,8 @@ type memoryStateStore struct {
 	branches    map[string]*Branch
 	endpoints   map[string]*Endpoint
 	credentials map[string]*EndpointCredential
+	roles       map[string]*Role
+	databases   map[string]*Database
 }
 
 func newMemoryStateStore() StateStore {
@@ -24,6 +27,8 @@ func newMemoryStateStore() StateStore {
 		branches:    map[string]*Branch{},
 		endpoints:   map[string]*Endpoint{},
 		credentials: map[string]*EndpointCredential{},
+		roles:       map[string]*Role{},
+		databases:   map[string]*Database{},
 	}
 }
 
@@ -50,6 +55,12 @@ func (s *memoryStateStore) Load(context.Context) (*StateSnapshot, error) {
 	for k, v := range s.credentials {
 		snap.Credentials[k] = v
 	}
+	for _, r := range s.roles {
+		snap.Roles = append(snap.Roles, r)
+	}
+	for _, d := range s.databases {
+		snap.Databases = append(snap.Databases, d)
+	}
 	return snap, nil
 }
 
@@ -61,6 +72,12 @@ func (s *memoryStateStore) CreateProjectBundle(_ context.Context, b *ProjectBund
 	}
 	if b.Branch != nil {
 		s.branches[b.Branch.BranchID] = b.Branch
+	}
+	for _, r := range b.Roles {
+		s.roles[catalogKey(r.BranchID, r.Name)] = r
+	}
+	for _, d := range b.Databases {
+		s.databases[catalogKey(d.BranchID, d.Name)] = d
 	}
 	if b.Endpoint != nil {
 		s.endpoints[b.Endpoint.EndpointID] = b.Endpoint
@@ -84,6 +101,16 @@ func (s *memoryStateStore) DeleteBranch(_ context.Context, branchID string) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.branches, branchID)
+	for k, r := range s.roles {
+		if r.BranchID == branchID {
+			delete(s.roles, k)
+		}
+	}
+	for k, d := range s.databases {
+		if d.BranchID == branchID {
+			delete(s.databases, k)
+		}
+	}
 	for id, ep := range s.endpoints {
 		if ep != nil && ep.BranchID == branchID {
 			delete(s.endpoints, id)
@@ -121,6 +148,16 @@ func (s *memoryStateStore) DeleteProject(_ context.Context, projectID string) er
 	for id, b := range s.branches {
 		if b != nil && b.ProjectID == projectID {
 			delete(s.branches, id)
+			for k, r := range s.roles {
+				if r.BranchID == id {
+					delete(s.roles, k)
+				}
+			}
+			for k, d := range s.databases {
+				if d.BranchID == id {
+					delete(s.databases, k)
+				}
+			}
 		}
 	}
 	for id, ep := range s.endpoints {
@@ -170,3 +207,88 @@ func (s *memoryStateStore) ResolveCredentials(_ context.Context, ep *Endpoint) (
 func (s *memoryStateStore) Health(context.Context) error { return nil }
 func (s *memoryStateStore) Flush(context.Context) error  { return nil }
 func (s *memoryStateStore) Close(context.Context) error  { return nil }
+
+// UpsertBranchCatalog 内存实现：branch 与 roles/databases 一次性写入。
+func (s *memoryStateStore) UpsertBranchCatalog(_ context.Context, b *Branch, roles []*Role, dbs []*Database) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.branches[b.BranchID] = b
+	for _, r := range roles {
+		s.roles[catalogKey(r.BranchID, r.Name)] = r
+	}
+	for _, d := range dbs {
+		s.databases[catalogKey(d.BranchID, d.Name)] = d
+	}
+	recordStoreWrite(nil)
+	return nil
+}
+
+func (s *memoryStateStore) ListRoles(_ context.Context, branchID string) ([]*Role, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*Role, 0)
+	for _, r := range s.roles {
+		if r.BranchID == branchID {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (s *memoryStateStore) GetRole(_ context.Context, branchID, name string) (*Role, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.roles[catalogKey(branchID, name)], nil
+}
+
+func (s *memoryStateStore) UpsertRole(_ context.Context, r *Role) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.roles[catalogKey(r.BranchID, r.Name)] = r
+	recordStoreWrite(nil)
+	return nil
+}
+
+func (s *memoryStateStore) DeleteRole(_ context.Context, branchID, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.roles, catalogKey(branchID, name))
+	recordStoreWrite(nil)
+	return nil
+}
+
+func (s *memoryStateStore) ListDatabases(_ context.Context, branchID string) ([]*Database, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*Database, 0)
+	for _, d := range s.databases {
+		if d.BranchID == branchID {
+			out = append(out, d)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (s *memoryStateStore) GetDatabase(_ context.Context, branchID, name string) (*Database, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.databases[catalogKey(branchID, name)], nil
+}
+
+func (s *memoryStateStore) UpsertDatabase(_ context.Context, d *Database) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.databases[catalogKey(d.BranchID, d.Name)] = d
+	recordStoreWrite(nil)
+	return nil
+}
+
+func (s *memoryStateStore) DeleteDatabase(_ context.Context, branchID, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.databases, catalogKey(branchID, name))
+	recordStoreWrite(nil)
+	return nil
+}

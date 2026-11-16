@@ -22,6 +22,8 @@ func reconcileOnStartup() {
 	if err := initStateStore(); err != nil {
 		log.Fatalf("state store: 初始化失败：%v", err)
 	}
+	// 0003 迁移只建表；这里按拓扑序幂等回填存量分支的角色/数据库目录。
+	seedCatalogRegistry()
 	if kubePersist != nil {
 		reconcileWithK8s()
 	}
