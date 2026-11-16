@@ -449,7 +449,7 @@ postgres@slpc:~$ curl "http://localhost:8080/projects/proj-6bfbbd0c5edcd85d/conn
 
 # 密码使用项目创建时返回的 sally 密码（只读副本复用同一角色的 SCRAM 凭据）
 psql "postgresql://sally:<password>@192.168.232.128:31266/mydb"
-
+# PGPASSWORD=a909e2a33b7e706b7bde6f0a94ed44a2 psql "postgresql://sally@192.168.232.128:30551/mydb"
 ```
 
 > 同一分支再创建 `read_write` 会返回 `409 Conflict`（一个分支最多一个主节点）；

@@ -224,12 +224,12 @@ $ curl -X POST http://localhost:8080/projects \
 
 **请求体** `ProjectCreateRequest`（对齐 Neon Cloud API v2）：
 
-| 字段                             | 类型   | 必填 | 说明                                |
-| -------------------------------- | ------ | ---- | ----------------------------------- |
-| `project.name`                 | string | 否   | project 名称（默认自动生成）        |
-| `project.branch.name`          | string | 否   | 初始分支名称（默认`"main"`）      |
+| 字段                             | 类型   | 必填 | 说明                                         |
+| -------------------------------- | ------ | ---- | -------------------------------------------- |
+| `project.name`                 | string | 否   | project 名称（默认自动生成）                 |
+| `project.branch.name`          | string | 否   | 初始分支名称（默认`"main"`）               |
 | `project.branch.role_name`     | string | 否   | 初始角色名（默认 `<database_name>_owner`） |
-| `project.branch.database_name` | string | 否   | 初始数据库名（默认`"neondb"`）    |
+| `project.branch.database_name` | string | 否   | 初始数据库名（默认`"neondb"`）             |
 
 ```console
 # 空请求体也完全支持（全部使用默认值）
@@ -468,9 +468,9 @@ $ curl -X POST http://localhost:8080/projects/proj-176db416e9091dd9/endpoints \
 
 **请求体**（官方嵌套形态）：
 
-| 字段                 | 类型   | 必填 | 说明                                              |
-| -------------------- | ------ | ---- | ------------------------------------------------- |
-| `endpoint.branch_id` | string | 否   | 目标分支 ID（空则使用默认 main 分支）             |
+| 字段                   | 类型   | 必填         | 说明                                                   |
+| ---------------------- | ------ | ------------ | ------------------------------------------------------ |
+| `endpoint.branch_id` | string | 否           | 目标分支 ID（空则使用默认 main 分支）                  |
 | `endpoint.type`      | string | **是** | `"read_write"` 或 `"read_only"`；缺失/非法返回 400 |
 
 > 兼容旧扁平 `{"branch_id":"...","type":"..."}`，嵌套形态优先。
@@ -507,13 +507,13 @@ $ curl -X POST http://localhost:8080/projects/proj-176db416e9091dd9/endpoints \
 
 参数与官方一致，`database_name` / `role_name` **必填**（角色与数据库属于分支，不能由控制面猜）：
 
-| 参数            | 必填   | 说明                                  |
-| --------------- | ------ | ------------------------------------- |
-| `branch_id`     | 否     | 默认 main 分支                        |
-| `endpoint_id`   | 否     | 默认该分支的 read_write endpoint      |
-| `database_name` | **是** | 数据库名                              |
-| `role_name`     | **是** | 角色名                                |
-| `pooled`        | 否     | 本部署未启用连接池；`pooled=true` 返回 `400`，`false` 等价于不传 |
+| 参数              | 必填         | 说明                                                                   |
+| ----------------- | ------------ | ---------------------------------------------------------------------- |
+| `branch_id`     | 否           | 默认 main 分支                                                         |
+| `endpoint_id`   | 否           | 默认该分支的 read_write endpoint                                       |
+| `database_name` | **是** | 数据库名                                                               |
+| `role_name`     | **是** | 角色名                                                                 |
+| `pooled`        | 否           | 本部署未启用连接池；`pooled=true` 返回 `400`，`false` 等价于不传 |
 
 错误响应为 `{"error": "..."}`（与官方 `{code, message, request_id}` 形状不同，控制面统一用简化的 error 字段）。
 
